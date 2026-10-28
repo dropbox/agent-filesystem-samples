@@ -6,7 +6,7 @@ Sample apps and services for [DBX Agent Filesystem](https://docs.dropboxapi.com/
 
 | Sample | What it shows |
 |---|---|
-| [FolderSync](foldersync/) | A macOS app that keeps a project folder in sync with a managed user's Dropbox. It signs users in through a small token server that keeps the app secret, gives each project an agent limited to that project's folder, writes as that agent, and undoes the agent's writes. |
+| [FolderSync](foldersync/) | A desktop app that keeps a project folder in sync with a managed user's Dropbox. It runs on macOS today. It signs users in through a small token server that keeps the app secret, gives each project an agent limited to that project's folder, writes as that agent, and undoes the agent's writes. |
 
 Each sample has its own README with setup steps.
 

@@ -4,7 +4,7 @@ Public repo of DBX Agent Filesystem samples. Each top-level folder is one self-c
 
 ## Wayfinding
 
-- `foldersync/`: macOS Electron app in TypeScript (`src/engine/` sync and Dropbox client, `src/main/` main process, `src/renderer/` window, `test/` Vitest tests).
+- `foldersync/`: desktop Electron app in TypeScript, macOS today (`src/engine/` sync and Dropbox client, `src/main/` main process, `src/renderer/` window, `test/` Vitest tests).
 - `foldersync/tokenserver/`: Go token server that holds the app secret and mints managed-user tokens.
 
 ## Build and test

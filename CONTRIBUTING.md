@@ -12,11 +12,11 @@ Thanks for helping improve these samples.
 
 Each top-level folder is one sample, with its own README, dependencies, and tests:
 
-- `foldersync/`: a macOS Electron app in TypeScript, and a token server in Go
+- `foldersync/`: a desktop Electron app in TypeScript, and a token server in Go
 
 ## Working on FolderSync
 
-You need Node.js 24 or later and Go 1.25 or later. The app runs on macOS on Apple silicon.
+You need Node.js 24 or later and Go 1.25 or later. The app runs on macOS on Apple silicon today.
 
 ```sh
 cd foldersync
