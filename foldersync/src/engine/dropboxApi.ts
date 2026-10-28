@@ -1,5 +1,7 @@
 // A small Dropbox API v2 client for the files/* routes the sync pass uses, and
-// rpc() for other routes.
+// rpc() for other routes. Uploads send their data in parallel and commit in
+// batches, one batch at a time, since Dropbox limits how many writes run at
+// once in an account.
 import {constants} from 'node:fs';
 import {open, rm, stat} from 'node:fs/promises';
 
@@ -80,6 +82,30 @@ export function isNotFound(err: unknown): boolean {
   return err instanceof ApiError && err.status === 409 && err.summary.includes('not_found');
 }
 
+// Spaces out requests after Dropbox asks a client to slow down. Every client
+// shares one, since the limit is per account.
+export class Pacer {
+  private notBefore = 0;
+  // How many times Dropbox has asked to slow down.
+  throttles = 0;
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  // Waits until requests may be sent again, including any wait added meanwhile.
+  async wait(sleep: (ms: number) => Promise<void>): Promise<void> {
+    for (let ms = this.notBefore - this.now(); ms > 0; ms = this.notBefore - this.now()) {
+      await sleep(ms);
+    }
+  }
+
+  throttled(ms: number): void {
+    this.throttles++;
+    this.notBefore = Math.max(this.notBefore, this.now() + ms);
+  }
+}
+
+export const sharedPacer = new Pacer();
+
 export interface TokenSource {
   getToken(): Promise<string>;
   // Gets a new token after the current one was rejected.
@@ -92,19 +118,31 @@ export interface ClientOptions {
   contentOrigin?: string;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  pacer?: Pacer;
+  // Commit a batch once this many uploads are waiting, or after batchIdleMs
+  // with no new upload.
+  batchSize?: number;
+  batchIdleMs?: number;
 }
 
 export interface RpcOptions {
   retry?: boolean;
 }
 
-// Upload session chunks, a multiple of 4 MiB. Files up to one chunk use
-// files/upload, so an upload holds at most one chunk in memory.
+// Upload session chunks, a multiple of 4 MiB, so an upload holds at most one
+// chunk in memory.
 const SESSION_CHUNK = 16 * 1024 * 1024;
-const SIMPLE_UPLOAD_LIMIT = SESSION_CHUNK;
 // The longest Retry-After to wait out. A call asked to wait longer fails.
 const MAX_RETRY_DELAY_MS = 60 * 1000;
 const MAX_RETRIES = 4;
+// How many times to retry after Dropbox asks to slow down.
+const MAX_THROTTLED_RETRIES = 10;
+// finish_batch_v2 takes at most 1,000 entries.
+const MAX_BATCH = 1000;
+const BATCH_SIZE = 6;
+const BATCH_IDLE_MS = 200;
+// How long to wait after Dropbox asks a batch entry to slow down.
+const THROTTLED_ENTRY_DELAY_MS = 1000;
 // How long an RPC call or an upload request may take, including its response.
 const RPC_TIMEOUT_MS = 2 * 60 * 1000;
 const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
@@ -116,12 +154,24 @@ export class DropboxClient implements DropboxFiles {
   private readonly contentOrigin: string;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly pacer: Pacer;
+  private readonly batcher: CommitBatcher;
+  // Uploads still sending data, so the batcher knows when every upload is
+  // waiting for its commit.
+  private sendingData = 0;
 
   constructor(private readonly opts: ClientOptions) {
     this.apiOrigin = opts.apiOrigin ?? 'https://api.dropboxapi.com';
     this.contentOrigin = opts.contentOrigin ?? 'https://content.dropboxapi.com';
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.pacer = opts.pacer ?? sharedPacer;
+    this.batcher = new CommitBatcher(
+      (entries) => this.finishBatch(entries),
+      () => this.sendingData,
+      opts.batchSize ?? BATCH_SIZE,
+      opts.batchIdleMs ?? BATCH_IDLE_MS
+    );
   }
 
   // Leaves out files that can't be downloaded, such as Paper and Google docs.
@@ -188,8 +238,8 @@ export class DropboxClient implements DropboxFiles {
     }
   }
 
+  // Uploads the file's data in an upload session, then commits it in a batch.
   async upload(req: UploadRequest): Promise<FileMeta> {
-    const {size} = await stat(req.localPath);
     const commit = {
       path: req.dropboxPath,
       mode: req.mode.kind === 'add' ? 'add' : {'.tag': 'update', update: req.mode.rev},
@@ -197,22 +247,46 @@ export class DropboxClient implements DropboxFiles {
       strict_conflict: true,
       client_modified: dropboxTime(req.clientModified),
     };
-    // O_NOFOLLOW: if the file was swapped for a symlink, fail instead of uploading its target.
-    const file = await open(req.localPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let size: number;
+    let sessionId: string;
+    this.sendingData++;
     try {
-      if (size <= SIMPLE_UPLOAD_LIMIT) {
-        const data = await readChunk(file, 0, size);
-        await req.checkUnchanged();
-        return parseFileMeta(
-          await this.content('files/upload', {...commit, content_hash: req.contentHash}, data, {
-            retry: false,
-          })
-        );
+      size = (await stat(req.localPath)).size;
+      // O_NOFOLLOW: if the file was swapped for a symlink, fail instead of uploading its target.
+      const file = await open(req.localPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        sessionId = await this.uploadData(file, size, req);
+      } finally {
+        await file.close();
       }
-      return await this.uploadSession(file, size, commit, req);
-    } finally {
-      await file.close();
+      await req.checkUnchanged();
+    } catch (err) {
+      this.sendingData--;
+      // The other uploads may all be waiting for commits now.
+      this.batcher.schedule();
+      throw err;
     }
+    // In the same step, so a batch never goes out between the two.
+    this.sendingData--;
+    const committed = this.batcher.commit({cursor: {session_id: sessionId, offset: size}, commit});
+    let meta: FileMeta;
+    try {
+      meta = await committed;
+    } catch (err) {
+      if (!(err instanceof UnconfirmedCommit)) {
+        throw err;
+      }
+      meta = await this.confirmUpload(req, err);
+    }
+    // The batch commit doesn't check content hashes, so check the result.
+    if (meta.contentHash !== req.contentHash) {
+      throw new Error(`The upload of ${req.dropboxPath} doesn’t match its content hash.`);
+    }
+    return meta;
+  }
+
+  async getMetadata(dropboxPath: string): Promise<Metadata> {
+    return parseMetadata(await this.rpc('files/get_metadata', {path: dropboxPath}));
   }
 
   // Deletes a file or folder. With parentRev, Dropbox refuses if the file
@@ -237,29 +311,36 @@ export class DropboxClient implements DropboxFiles {
     }
   }
 
-  private async uploadSession(
+  // Sends the file's data to a new upload session, closed after the last
+  // chunk, and returns its ID. Each call carries its own bytes' hash, so
+  // Dropbox rejects a damaged chunk.
+  private async uploadData(
     file: Awaited<ReturnType<typeof open>>,
     size: number,
-    commit: Record<string, unknown>,
     req: UploadRequest
-  ): Promise<FileMeta> {
-    let offset = 0;
+  ): Promise<string> {
     const first = await readChunk(file, 0, Math.min(SESSION_CHUNK, size));
-    // Each call carries its own bytes' hash, so Dropbox rejects a damaged chunk.
+    let offset = first.length;
+    if (offset === size) {
+      await req.checkUnchanged();
+    }
     const started = await this.content(
       'files/upload_session/start',
-      {close: false, content_hash: hashBuffer(first)},
+      {close: offset === size, content_hash: hashBuffer(first)},
       first
     );
     const sessionId = requireString(started, 'session_id');
-    offset += first.length;
-    while (size - offset > SESSION_CHUNK) {
+    while (offset < size) {
       await req.checkUnchanged();
-      const chunk = await readChunk(file, offset, SESSION_CHUNK);
+      const chunk = await readChunk(file, offset, Math.min(SESSION_CHUNK, size - offset));
+      const close = offset + chunk.length === size;
+      if (close) {
+        await req.checkUnchanged();
+      }
       try {
         await this.content(
           'files/upload_session/append_v2',
-          {cursor: {session_id: sessionId, offset}, close: false, content_hash: hashBuffer(chunk)},
+          {cursor: {session_id: sessionId, offset}, close, content_hash: hashBuffer(chunk)},
           chunk
         );
       } catch (err) {
@@ -270,20 +351,53 @@ export class DropboxClient implements DropboxFiles {
       }
       offset += chunk.length;
     }
-    const last = await readChunk(file, offset, size - offset);
-    await req.checkUnchanged();
-    const meta = parseFileMeta(
-      await this.content(
-        'files/upload_session/finish',
-        {cursor: {session_id: sessionId, offset}, commit, content_hash: hashBuffer(last)},
-        last,
-        {retry: false}
-      )
-    );
-    if (meta.contentHash !== req.contentHash) {
-      throw new Error(`The upload of ${req.dropboxPath} doesn’t match its content hash.`);
+    return sessionId;
+  }
+
+  // Commits a batch of closed upload sessions. Never retried after an unclear
+  // failure: committing a session again saves a second copy.
+  private async finishBatch(entries: CommitEntry[]): Promise<CommitResult[]> {
+    let res: unknown;
+    try {
+      res = await this.rpc('files/upload_session/finish_batch_v2', {entries}, {retry: false});
+    } catch (err) {
+      // The server answered that it didn't commit anything.
+      if (err instanceof ApiError && err.status < 500) {
+        throw err;
+      }
+      throw new UnconfirmedCommit(err);
     }
-    return meta;
+    const results = isRecord(res) && Array.isArray(res.entries) ? res.entries : [];
+    if (results.length !== entries.length) {
+      throw new UnconfirmedCommit(new Error('Dropbox returned an incomplete batch result.'));
+    }
+    const parsed = results.map((r): CommitResult => {
+      if (isRecord(r) && r['.tag'] === 'success') {
+        return {meta: parseFileMeta({...r, '.tag': 'file'})};
+      }
+      const failure = isRecord(r) ? r.failure : undefined;
+      const summary = tagPath(failure);
+      return {
+        error: new ApiError(409, summary, {error: failure}),
+        throttled: summary.startsWith('too_many_write_operations'),
+      };
+    });
+    if (parsed.some((r) => 'throttled' in r && r.throttled)) {
+      this.pacer.throttled(THROTTLED_ENTRY_DELAY_MS);
+    }
+    return parsed;
+  }
+
+  // Checks whether an upload whose commit got no clear answer was saved: the
+  // file in Dropbox has this content. Otherwise the next pass syncs it again.
+  private async confirmUpload(req: UploadRequest, err: UnconfirmedCommit): Promise<FileMeta> {
+    const meta = await this.getMetadata(req.dropboxPath).catch(() => undefined);
+    if (meta?.tag === 'file' && meta.contentHash === req.contentHash) {
+      return meta;
+    }
+    throw new Error(
+      `Couldn’t confirm that ${req.dropboxPath} was saved (${errorText(err.cause)}). It will be synced again.`
+    );
   }
 
   // Calls an RPC route. Pass retry: false for routes that aren't safe to repeat
@@ -333,21 +447,32 @@ export class DropboxClient implements DropboxFiles {
     });
   }
 
-  // Sends a request, renewing the token once on 401 and retrying 429, and 5xx
-  // unless retryServerErrors is false. A new token can also fix missing_scope
-  // after the token server starts asking for more scopes.
+  // Sends a request, renewing the token once on 401 and retrying 429. Unless
+  // retry is false, it also retries 5xx and network errors. A new token can
+  // also fix missing_scope after the token server starts asking for more scopes.
   // waitUntil, if set, ends retry waits early, for a call with a deadline.
   private async send(
     url: string,
     init: (token: string) => RequestInit,
-    retryServerErrors = true,
+    retry = true,
     waitUntil?: AbortSignal
   ): Promise<Response> {
     let token = await this.opts.tokens.getToken();
     let renewed = false;
+    let throttledRetries = 0;
     for (let attempt = 0; ; attempt++) {
+      await untilAborted(this.pacer.wait(this.sleep), waitUntil);
       const request = init(token);
-      const res = await this.fetchImpl(url, request);
+      let res: Response;
+      try {
+        res = await this.fetchImpl(url, request);
+      } catch (err) {
+        if (!retry || request.signal?.aborted || attempt >= MAX_RETRIES) {
+          throw err;
+        }
+        await untilAborted(this.sleep(500 * 2 ** attempt), waitUntil);
+        continue;
+      }
       if (res.status === 401 && !renewed) {
         const text = await res.text();
         if (/expired_access_token|invalid_access_token|missing_scope/.test(text)) {
@@ -359,9 +484,20 @@ export class DropboxClient implements DropboxFiles {
         }
         throw new ApiError(401, summaryOf(text));
       }
-      const retryable = res.status === 429 || (retryServerErrors && res.status >= 500);
       const delay = retryDelayMs(res, attempt);
-      if (retryable && attempt < MAX_RETRIES && delay <= MAX_RETRY_DELAY_MS) {
+      if (
+        res.status === 429 &&
+        throttledRetries < MAX_THROTTLED_RETRIES &&
+        delay <= MAX_RETRY_DELAY_MS
+      ) {
+        // Every client waits it out, since the limit is per account.
+        throttledRetries++;
+        attempt--;
+        await res.body?.cancel();
+        this.pacer.throttled(delay);
+        continue;
+      }
+      if (retry && res.status >= 500 && attempt < MAX_RETRIES && delay <= MAX_RETRY_DELAY_MS) {
         await res.body?.cancel();
         await untilAborted(this.sleep(delay), waitUntil);
         continue;
@@ -372,6 +508,96 @@ export class DropboxClient implements DropboxFiles {
 }
 
 const NO_ANSWER = 'Dropbox didn’t answer in time.';
+
+// One file in a finish_batch_v2 request.
+interface CommitEntry {
+  cursor: {session_id: string; offset: number};
+  commit: Record<string, unknown>;
+}
+
+type CommitResult = {meta: FileMeta} | {error: ApiError; throttled: boolean};
+
+// A batch commit that failed without saying whether it saved anything.
+class UnconfirmedCommit extends Error {
+  constructor(override readonly cause: unknown) {
+    super(errorText(cause));
+  }
+}
+
+// Collects upload commits and sends them in batches, one batch at a time. A
+// batch goes out once every upload is waiting for its commit, once batchSize
+// are waiting, or after idleMs with no new one. A commit Dropbox asks to slow
+// down goes in the next batch.
+class CommitBatcher {
+  private pending: {
+    entry: CommitEntry;
+    retries: number;
+    resolve: (meta: FileMeta) => void;
+    reject: (err: unknown) => void;
+  }[] = [];
+  private timer: NodeJS.Timeout | undefined;
+  private sending = false;
+
+  constructor(
+    private readonly send: (entries: CommitEntry[]) => Promise<CommitResult[]>,
+    // Uploads that will ask for a commit but haven't yet.
+    private readonly coming: () => number,
+    private readonly batchSize: number,
+    private readonly idleMs: number
+  ) {}
+
+  commit(entry: CommitEntry): Promise<FileMeta> {
+    return new Promise((resolve, reject) => {
+      this.pending.push({entry, retries: 0, resolve, reject});
+      this.schedule();
+    });
+  }
+
+  schedule(): void {
+    if (this.sending || this.pending.length === 0) {
+      return;
+    }
+    clearTimeout(this.timer);
+    if (this.pending.length >= this.batchSize || this.coming() === 0) {
+      void this.flush();
+    } else {
+      this.timer = setTimeout(() => void this.flush(), this.idleMs);
+    }
+  }
+
+  private async flush(): Promise<void> {
+    clearTimeout(this.timer);
+    if (this.sending) {
+      return;
+    }
+    this.sending = true;
+    const batch = this.pending.splice(0, MAX_BATCH);
+    try {
+      const results = await this.send(batch.map((p) => p.entry));
+      results.forEach((r, i) => {
+        const p = batch[i];
+        if (!p) {
+          return;
+        }
+        if ('meta' in r) {
+          p.resolve(r.meta);
+        } else if (r.throttled && p.retries < MAX_THROTTLED_RETRIES) {
+          p.retries++;
+          this.pending.push(p);
+        } else {
+          p.reject(r.error);
+        }
+      });
+    } catch (err) {
+      for (const p of batch) {
+        p.reject(err);
+      }
+    } finally {
+      this.sending = false;
+      this.schedule();
+    }
+  }
+}
 
 // Waits for promise, or rejects with the signal's reason as soon as it aborts.
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
@@ -471,6 +697,22 @@ function correctOffset(err: unknown): number | undefined {
 function retryDelayMs(res: Response, attempt: number): number {
   const seconds = Number(res.headers.get('retry-after'));
   return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 500 * 2 ** attempt;
+}
+
+// Joins nested '.tag' values the way error_summary does, like 'path/conflict/file/'.
+function tagPath(v: unknown): string {
+  let out = '';
+  let node = v;
+  while (isRecord(node) && typeof node['.tag'] === 'string') {
+    const tag = node['.tag'];
+    out += `${tag}/`;
+    node = node[tag];
+  }
+  return out || 'unknown/';
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function summaryOf(text: string): string {

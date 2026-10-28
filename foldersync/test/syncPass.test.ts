@@ -11,7 +11,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
-import {existsSync} from 'node:fs';
+import {existsSync, renameSync, rmSync, symlinkSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -21,8 +21,9 @@ import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {statOrUndefined} from '../src/engine/localScan';
 import {STATE_DIR} from '../src/engine/paths';
 import type {DropboxFiles} from '../src/engine/dropboxApi';
+import {Pool} from '../src/engine/pool';
 import {StateStore} from '../src/engine/stateStore';
-import {runSyncPass} from '../src/engine/syncPass';
+import {runSyncPass, type PassOptions} from '../src/engine/syncPass';
 import {FakeDropbox} from './fakeDropbox';
 
 const ROOT = '/project';
@@ -31,8 +32,12 @@ const ACCOUNT = 'pid_user:a';
 let dir: string;
 let dropbox: FakeDropbox;
 let store: StateStore;
+// Runs at each step of a pass. 'Comparing' comes after the scan and before
+// any action, so a test can change the folder there.
+let onStep: ((step: string) => void) | undefined;
 
 beforeEach(async () => {
+  onStep = undefined;
   dir = await mkdtemp(join(tmpdir(), 'foldersync-'));
   dropbox = new FakeDropbox();
   await dropbox.createFolder(ROOT);
@@ -56,7 +61,38 @@ function sync(
     dropboxRoot: ROOT,
     accountId: ACCOUNT,
     allowMassDelete,
+    onStep: (step) => onStep?.(step),
   });
+}
+
+// A pass with some options set, such as its pools.
+function syncWith(opts: Partial<PassOptions>): ReturnType<typeof runSyncPass> {
+  return runSyncPass({
+    api: dropbox,
+    store,
+    localRoot: dir,
+    dropboxRoot: ROOT,
+    accountId: ACCOUNT,
+    onStep: (step) => onStep?.(step),
+    ...opts,
+  });
+}
+
+// Wraps a call to count how many run at once, with a short wait so they overlap.
+function counted<A extends unknown[], R>(
+  fn: (...args: A) => Promise<R>,
+  counter: {now: number; max: number}
+): (...args: A) => Promise<R> {
+  return async (...args) => {
+    counter.now++;
+    counter.max = Math.max(counter.max, counter.now);
+    try {
+      await new Promise((r) => setTimeout(r, 5));
+      return await fn(...args);
+    } finally {
+      counter.now--;
+    }
+  };
 }
 
 // The fake Dropbox with some calls replaced.
@@ -402,7 +438,9 @@ describe('sync pass', () => {
     dropbox.put('/project/a.txt', 'theirs');
     await writeLocal("a (user's conflicted copy).txt", 'unsynced');
 
-    await sync();
+    // One upload at a time, so the unsynced file commits first and keeps its
+    // name. In parallel, whichever commits first gets it; see 'parallel sync'.
+    await syncWith({transfers: new Pool(1)});
 
     // Dropbox never reuses a name, so every version is kept on both sides.
     expect(await local("a (user's conflicted copy).txt")).toBe('unsynced');
@@ -775,12 +813,12 @@ describe('sync pass', () => {
     await sync();
     const outside = await mkdtemp(join(tmpdir(), 'foldersync-outside-'));
     dropbox.remove('/project/shots/a.txt');
-    // b.txt downloads before the delete, and the swap happens then.
-    dropbox.put('/project/b.txt', 'B');
-    dropbox.afterDownload = async () => {
-      dropbox.afterDownload = undefined;
-      await rename(join(dir, 'shots'), join(outside, 'shots'));
-      await symlink(join(outside, 'shots'), join(dir, 'shots'));
+    // The swap happens after the scan, before the delete.
+    onStep = (step) => {
+      if (step === 'Comparing') {
+        renameSync(join(dir, 'shots'), join(outside, 'shots'));
+        symlinkSync(join(outside, 'shots'), join(dir, 'shots'));
+      }
     };
 
     const summary = await sync();
@@ -795,12 +833,12 @@ describe('sync pass', () => {
     await sync();
     await writeLocal('shots/new.txt', 'private');
     const outside = await mkdtemp(join(tmpdir(), 'foldersync-outside-'));
-    // a0.txt downloads before the upload, and the swap happens then.
-    dropbox.put('/project/a0.txt', 'new');
-    dropbox.afterDownload = async () => {
-      dropbox.afterDownload = undefined;
-      await rename(join(dir, 'shots'), join(outside, 'shots'));
-      await symlink(join(outside, 'shots'), join(dir, 'shots'));
+    // The swap happens after the scan, before the upload.
+    onStep = (step) => {
+      if (step === 'Comparing') {
+        renameSync(join(dir, 'shots'), join(outside, 'shots'));
+        symlinkSync(join(outside, 'shots'), join(dir, 'shots'));
+      }
     };
 
     const summary = await sync();
@@ -816,11 +854,12 @@ describe('sync pass', () => {
     const moved = `${dir}-moved`;
     dropbox.put('/project/b.txt', 'B');
     dropbox.put('/project/c.txt', 'C');
-    // After b.txt downloads, the project folder becomes a link to its old self.
-    dropbox.afterDownload = async () => {
-      dropbox.afterDownload = undefined;
-      await rename(dir, moved);
-      await symlink(moved, dir);
+    // After the scan, the project folder becomes a link to its old self.
+    onStep = (step) => {
+      if (step === 'Comparing') {
+        renameSync(dir, moved);
+        symlinkSync(moved, dir);
+      }
     };
 
     const summary = await sync();
@@ -875,13 +914,13 @@ describe('sync pass', () => {
     await sync();
     const outside = await mkdtemp(join(tmpdir(), 'foldersync-outside-'));
     dropbox.remove('/project/a.txt');
-    // b.txt downloads before the delete, and the swap happens then.
-    dropbox.put('/project/b.txt', 'B');
-    dropbox.afterDownload = async () => {
-      dropbox.afterDownload = undefined;
-      const oldFiles = join(dir, STATE_DIR, 'old_files');
-      await rm(oldFiles, {recursive: true});
-      await symlink(outside, oldFiles);
+    // The swap happens after the scan, before the delete backs up a.txt.
+    onStep = (step) => {
+      if (step === 'Comparing') {
+        const oldFiles = join(dir, STATE_DIR, 'old_files');
+        rmSync(oldFiles, {recursive: true});
+        symlinkSync(outside, oldFiles);
+      }
     };
 
     const summary = await sync();
@@ -1081,5 +1120,155 @@ describe('sync pass', () => {
 
     await expect(linked).rejects.toThrow(/is a link or a file/);
     await rm(real, {recursive: true, force: true});
+  });
+});
+
+describe('parallel sync', () => {
+  it('runs at most the transfer pool’s limit of uploads and downloads at once', async () => {
+    for (let i = 0; i < 6; i++) {
+      dropbox.put(`/project/in${i}.txt`, `in${i}`);
+      await writeLocal(`out${i}.txt`, `out${i}`);
+    }
+    const counter = {now: 0, max: 0};
+    const api = filesWith({
+      upload: counted(dropbox.upload.bind(dropbox), counter),
+      downloadToFile: counted(dropbox.downloadToFile.bind(dropbox), counter),
+    });
+
+    const summary = await syncWith({api, transfers: new Pool(3)});
+
+    expect(summary).toMatchObject({uploaded: 6, downloaded: 6, issues: []});
+    expect(counter.max).toBe(3);
+  });
+
+  it('runs at most the delete pool’s limit of deletes at once', async () => {
+    for (let i = 0; i < 6; i++) {
+      dropbox.put(`/project/d${i}.txt`, 'x');
+    }
+    await sync();
+    for (let i = 0; i < 6; i++) {
+      await rm(join(dir, `d${i}.txt`));
+    }
+    const counter = {now: 0, max: 0};
+    const api = filesWith({deleteV2: counted(dropbox.deleteV2.bind(dropbox), counter)});
+
+    const summary = await syncWith({api, deletes: new Pool(2), allowMassDelete: true});
+
+    expect(summary).toMatchObject({deletedRemote: 6, issues: []});
+    expect(counter.max).toBe(2);
+  });
+
+  it('creates folders first, then deletes, then uploads and downloads', async () => {
+    dropbox.put('/project/old.txt', 'old');
+    await sync();
+    await rm(join(dir, 'old.txt'));
+    await writeLocal('new/up.txt', 'up');
+    dropbox.put('/project/down.txt', 'down');
+    const calls: string[] = [];
+    const log =
+      <A extends unknown[], R>(name: string, fn: (...args: A) => Promise<R>) =>
+      async (...args: A): Promise<R> => {
+        calls.push(name);
+        return fn(...args);
+      };
+    const api = filesWith({
+      createFolder: log('createFolder', dropbox.createFolder.bind(dropbox)),
+      deleteV2: log('deleteV2', dropbox.deleteV2.bind(dropbox)),
+      upload: log('upload', dropbox.upload.bind(dropbox)),
+      downloadToFile: log('download', dropbox.downloadToFile.bind(dropbox)),
+    });
+
+    await syncWith({api});
+
+    expect(calls.slice(0, 2)).toEqual(['createFolder', 'deleteV2']);
+    expect([...calls.slice(2)].sort()).toEqual(['download', 'upload']);
+  });
+
+  it('downloads several files into one new folder at once', async () => {
+    for (const name of ['a', 'b', 'c', 'd']) {
+      dropbox.put(`/project/new/${name}.txt`, name);
+    }
+    // With no entry for the folder, each download creates it.
+    const withoutFolders = async (path: string, recursive: boolean) => {
+      const res = await dropbox.listFolder(path, recursive);
+      return {...res, entries: res.entries.filter((e) => e.tag !== 'folder')};
+    };
+
+    const summary = await syncWith({
+      api: filesWith({listFolder: withoutFolders}),
+      transfers: new Pool(4),
+    });
+
+    expect(summary).toMatchObject({downloaded: 4, issues: []});
+    expect(await local('new/d.txt')).toBe('d');
+  });
+
+  it('keeps both versions of a file changed on both sides while other files sync', async () => {
+    dropbox.put('/project/a.txt', 'base');
+    await sync();
+    await writeLocal('a.txt', 'mine');
+    dropbox.put('/project/a.txt', 'theirs');
+    for (let i = 0; i < 5; i++) {
+      dropbox.put(`/project/other${i}.txt`, `other${i}`);
+    }
+
+    const summary = await sync();
+
+    expect(summary).toMatchObject({conflicts: 1, downloaded: 6});
+    expect(await local('a.txt')).toBe('theirs');
+    expect(await local('other4.txt')).toBe('other4');
+    const copies = [...dropbox.files.values()].filter((f) => f.data.toString() === 'mine');
+    expect(copies).toHaveLength(1);
+  });
+});
+
+describe('conflicts with a delete', () => {
+  it('keeps the edit as a conflicted copy when the other computer deletes the file during the upload', async () => {
+    dropbox.put('/project/a.txt', 'base');
+    await sync();
+    await writeLocal('a.txt', 'edited');
+    // Deleted in Dropbox after the listing, before the upload.
+    onStep = (step) => {
+      if (step === 'Comparing') {
+        dropbox.remove('/project/a.txt');
+      }
+    };
+
+    const summary = await sync();
+
+    expect(summary.issues.filter((i) => !i.message.startsWith('Conflict:'))).toEqual([]);
+    const copies = [...dropbox.files.values()].map((f) => f.data.toString());
+    expect(copies).toEqual(['edited']);
+    expect(store.row('/project/a.txt')).toBeUndefined();
+    onStep = undefined;
+    await sync();
+    expect((await readdir(dir)).filter((n) => n !== STATE_DIR)).toHaveLength(1);
+    expect(await local("a (user's conflicted copy).txt")).toBe('edited');
+  });
+});
+
+describe('parallel conflicts', () => {
+  it('keeps every version when two uploads want the same conflicted-copy name', async () => {
+    dropbox.put('/project/a.txt', 'v1');
+    await sync();
+    await writeLocal('a.txt', 'mine');
+    dropbox.put('/project/a.txt', 'theirs');
+    await writeLocal("a (user's conflicted copy).txt", 'unsynced');
+
+    await syncWith({transfers: new Pool(6)});
+    await sync();
+
+    const localFiles = new Map<string, string>();
+    for (const name of await readdir(dir)) {
+      if (name !== STATE_DIR) {
+        localFiles.set(name.toLowerCase(), await readFile(join(dir, name), 'utf8'));
+      }
+    }
+    const remoteFiles = new Map(
+      [...dropbox.files].map(([k, f]) => [k.slice('/project/'.length), f.data.toString()])
+    );
+    expect(localFiles).toEqual(remoteFiles);
+    expect([...remoteFiles.values()].sort()).toEqual(['mine', 'theirs', 'unsynced']);
+    expect(remoteFiles.get('a.txt')).toBe('theirs');
   });
 });

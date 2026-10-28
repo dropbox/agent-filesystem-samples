@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 
 import {BLOCK_SIZE, hashBuffer, hashFile} from '../src/engine/contentHash';
-import {DropboxClient} from '../src/engine/dropboxApi';
+import {DropboxClient, Pacer} from '../src/engine/dropboxApi';
 import {
   HttpAgentDirectory,
   HttpTokenProvider,
@@ -189,6 +189,7 @@ describe('Dropbox client', () => {
       };
       let renewed = 0;
       const client = new DropboxClient({
+        pacer: new Pacer(),
         fetchImpl,
         tokens: {
           getToken: async () => 'old',
@@ -227,6 +228,7 @@ describe('Dropbox client', () => {
         },
       });
     const client = new DropboxClient({
+      pacer: new Pacer(),
       fetchImpl,
       tokens: {getToken: async () => 'tok', renewToken: async () => 'tok'},
     });
@@ -252,6 +254,7 @@ describe('Dropbox client', () => {
 
   function client(fetchImpl: typeof fetch): DropboxClient {
     return new DropboxClient({
+      pacer: new Pacer(),
       fetchImpl,
       tokens: {getToken: async () => 'tok', renewToken: async () => 'tok'},
       sleep: async () => {},
@@ -340,6 +343,7 @@ describe('Dropbox client', () => {
     const body = new TextEncoder().encode('hello');
     let calls = 0;
     const api = new DropboxClient({
+      pacer: new Pacer(),
       fetchImpl: async () =>
         ++calls === 1
           ? new Response('{}', {status: 429, headers: {'Retry-After': '60'}})
@@ -374,6 +378,7 @@ describe('Dropbox client', () => {
     const waits: number[] = [];
     let calls = 0;
     const api = new DropboxClient({
+      pacer: new Pacer(),
       fetchImpl: async () => {
         calls++;
         return new Response('{"error_summary": "too_many_requests/"}', {
@@ -457,8 +462,9 @@ describe('Dropbox client', () => {
     await expect(provider.fetchToken()).rejects.toThrow(message);
   });
 
-  // A fake content host for upload sessions. Records each route, its argument,
-  // and the bytes sent; append can be made to fail once with a server error.
+  // A fake Dropbox for upload sessions and their batch commit. Records each
+  // route, its argument, and the bytes sent; append can be made to fail once
+  // with a server error.
   function sessionFake(opts: {failFirstAppend?: boolean} = {}) {
     const calls: {route: string; arg: unknown; bytes: number}[] = [];
     let appends = 0;
@@ -492,15 +498,23 @@ describe('Dropbox client', () => {
         stored += bytes;
         return Response.json(null);
       }
+      if (route === 'files/upload_session/finish_batch_v2') {
+        calls[calls.length - 1] = {route, arg: JSON.parse(String(body)), bytes: 0};
+      }
       return Response.json({
-        id: 'id:big',
-        path_lower: '/p/big.bin',
-        path_display: '/p/big.bin',
-        rev: 'r1',
-        content_hash: 'h',
-        size: stored + bytes,
-        client_modified: '2026-10-21T00:00:00Z',
-        server_modified: '2026-10-21T00:00:00Z',
+        entries: [
+          {
+            '.tag': 'success',
+            id: 'id:big',
+            path_lower: '/p/big.bin',
+            path_display: '/p/big.bin',
+            rev: 'r1',
+            content_hash: 'h',
+            size: stored,
+            client_modified: '2026-10-21T00:00:00Z',
+            server_modified: '2026-10-21T00:00:00Z',
+          },
+        ],
       });
     };
     return {calls, fetchImpl};
@@ -514,7 +528,7 @@ describe('Dropbox client', () => {
 
   const CHUNK = 16 * 1024 * 1024;
 
-  it('uploads a file one byte over a chunk as a session start and finish', async () => {
+  it('uploads a file one byte over a chunk as a session start, a closing append, and a batch commit', async () => {
     const fake = sessionFake();
     let checks = 0;
     const meta = await client(fake.fetchImpl).upload({
@@ -530,9 +544,17 @@ describe('Dropbox client', () => {
 
     expect(fake.calls.map((c) => [c.route, c.bytes])).toEqual([
       ['files/upload_session/start', CHUNK],
-      ['files/upload_session/finish', 1],
+      ['files/upload_session/append_v2', 1],
+      ['files/upload_session/finish_batch_v2', 0],
     ]);
-    expect(fake.calls[1]?.arg).toMatchObject({cursor: {session_id: 's1', offset: CHUNK}});
+    expect(fake.calls[0]?.arg).toMatchObject({close: false});
+    expect(fake.calls[1]?.arg).toMatchObject({
+      cursor: {session_id: 's1', offset: CHUNK},
+      close: true,
+    });
+    expect(fake.calls[2]?.arg).toMatchObject({
+      entries: [{cursor: {session_id: 's1', offset: CHUNK + 1}, commit: {path: '/p/big.bin'}}],
+    });
     expect(checks).toBeGreaterThan(0);
     expect(meta.size).toBe(CHUNK + 1);
   });
@@ -553,7 +575,9 @@ describe('Dropbox client', () => {
     expect(fake.calls.map((c) => [c.route, Reflect.get(Object(c.arg), 'content_hash')])).toEqual([
       ['files/upload_session/start', chunk],
       ['files/upload_session/append_v2', chunk],
-      ['files/upload_session/finish', hashBuffer(Buffer.alloc(1, 1))],
+      ['files/upload_session/append_v2', hashBuffer(Buffer.alloc(1, 1))],
+      // The batch commit doesn't check hashes, so the data calls carry them.
+      ['files/upload_session/finish_batch_v2', undefined],
     ]);
   });
 
@@ -570,14 +594,15 @@ describe('Dropbox client', () => {
     });
 
     const finish = fake.calls.at(-1);
-    expect(finish?.route).toBe('files/upload_session/finish');
-    expect(finish?.arg).toMatchObject({cursor: {offset: 2 * CHUNK}});
+    expect(finish?.route).toBe('files/upload_session/finish_batch_v2');
+    expect(finish?.arg).toMatchObject({entries: [{cursor: {offset: 2 * CHUNK + 1}}]});
     expect(meta.size).toBe(2 * CHUNK + 1);
   });
 
   it('gives up waiting to retry when the call’s deadline passes', async () => {
     vi.useFakeTimers();
     const api = new DropboxClient({
+      pacer: new Pacer(),
       fetchImpl: async () => new Response('{}', {status: 429, headers: {'Retry-After': '30'}}),
       tokens: {getToken: async () => 'tok', renewToken: async () => 'tok'},
       // A wait that never ends, unless the deadline cuts it short.
@@ -599,6 +624,7 @@ describe('Dropbox client', () => {
       releaseLate = resolve;
     });
     const api = new DropboxClient({
+      pacer: new Pacer(),
       fetchImpl: async (_url, init) => {
         if (new Headers(init?.headers).get('Authorization') === 'Bearer old') {
           // The listing of /q answers only after /p has renewed the token.
@@ -631,6 +657,7 @@ describe('Dropbox client', () => {
   it('gives up when a token renewal outlasts the call’s deadline', async () => {
     vi.useFakeTimers();
     const api = new DropboxClient({
+      pacer: new Pacer(),
       fetchImpl: async () => new Response('expired_access_token', {status: 401}),
       // A renewal that never answers.
       tokens: {getToken: async () => 'tok', renewToken: () => new Promise(() => {})},
@@ -648,10 +675,21 @@ describe('Dropbox client', () => {
     await expect(api.listFolder('/p', true)).rejects.toThrow(/incomplete list_folder/);
   });
 
-  it('does not replay an upload after a server error', async () => {
-    let calls = 0;
-    const api = client(async () => {
-      calls++;
+  it('retries upload data after a server error, but never the commit', async () => {
+    const routes: string[] = [];
+    let starts = 0;
+    const api = client(async (url) => {
+      const route = new URL(String(url)).pathname.replace('/2/', '');
+      routes.push(route);
+      if (route === 'files/upload_session/start') {
+        starts++;
+        return starts === 1
+          ? new Response('{"error_summary": "internal/"}', {status: 500})
+          : Response.json({session_id: 's1'});
+      }
+      if (route === 'files/get_metadata') {
+        return new Response('{"error_summary": "path/not_found/"}', {status: 409});
+      }
       return new Response('{"error_summary": "internal/"}', {status: 500});
     });
     const dir = await mkdtemp(join(tmpdir(), 'foldersync-test-'));
@@ -666,8 +704,13 @@ describe('Dropbox client', () => {
         contentHash: hashBuffer(new TextEncoder().encode('a')),
         checkUnchanged: async () => {},
       })
-    ).rejects.toThrow(/HTTP 500/);
-    expect(calls).toBe(1);
+    ).rejects.toThrow(/Couldn’t confirm that \/p\/a\.txt was saved/);
+    expect(routes).toEqual([
+      'files/upload_session/start',
+      'files/upload_session/start',
+      'files/upload_session/finish_batch_v2',
+      'files/get_metadata',
+    ]);
   });
 
   it('treats only an existing folder as success when creating a folder', async () => {

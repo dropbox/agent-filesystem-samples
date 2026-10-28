@@ -119,10 +119,10 @@ A project is a top-level folder in the managed user's Dropbox.
    it, or **Change folder…** to use another folder.
 
 Each Sync now uploads new and changed files, downloads changes from Dropbox,
-and copies deletes in both directions. If a file changed on both sides, you get
-both versions: Dropbox keeps yours as a "conflicted copy". If a sync would
-delete more than half of a project's files (at least 20), FolderSync asks
-before it deletes anything.
+and copies deletes in both directions, up to 6 files at a time. If a file
+changed on both sides, you get both versions: Dropbox keeps yours as a
+"conflicted copy". If a sync would delete more than half of a project's files
+(at least 20), FolderSync asks before it deletes anything.
 
 Deleting a folder on this computer deletes its files in Dropbox but keeps the
 folder there, empty, so nothing added to it meanwhile is lost. FolderSync
@@ -225,7 +225,8 @@ These are the parts to copy:
 | Read as the user and write as the agent | `src/main/projectClients.ts` |
 | List an agent's changes and undo them | `src/engine/agents.ts`: `listChanges`, `startUndo`, `undoStatus`; `src/main/projects.ts`: `undo` |
 | Call API v2 files routes: list, download, upload, delete | `src/engine/dropboxApi.ts` |
-| Two-way sync of a folder | `src/engine/syncPass.ts` |
+| Upload many files at once, committing them in batches | `src/engine/dropboxApi.ts`: `upload`, `CommitBatcher` |
+| Two-way sync of a folder, several files at a time | `src/engine/syncPass.ts`, `src/engine/pool.ts` |
 
 ### Tokens and agents
 
@@ -312,7 +313,7 @@ Dropbox API app ── app key and secret, held only by the token server
 │                          │◄────────────────────────────── agent token │                              │
 │ syncPass.ts              │  (5) reads, user token                     │ files/list_folder, download  │
 │                          │───────────────────────────────────────────►│                              │
-│                          │  (6) writes, agent token                   │ files/upload, delete_v2,     │
+│                          │  (6) writes, agent token                   │ upload_session, delete_v2,   │
 │                          │───────────────────────────────────────────►│ create_folder_v2             │
 │ projects.ts (Undo)       │  (7) user token                            │ agents/mutations/list,       │
 │                          │───────────────────────────────────────────►│ agents/restore_writes        │
