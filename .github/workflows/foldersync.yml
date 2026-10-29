@@ -1,0 +1,94 @@
+# Checks FolderSync on every pull request and push to main. After a merge,
+# or when run by hand, it also builds the macOS zip and keeps it as an artifact.
+name: FolderSync
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: foldersync-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  app:
+    name: App (lint, typecheck, test)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: foldersync
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: foldersync/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+
+  token-server:
+    name: Token server (vet, test, lint, vulnerabilities)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: foldersync/tokenserver
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: foldersync/tokenserver/go.mod
+          cache-dependency-path: foldersync/tokenserver/go.sum
+      - run: go vet ./...
+      - run: go test ./...
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+          # Built with this job's Go, so it can read Go 1.27 packages.
+          install-mode: goinstall
+          working-directory: foldersync/tokenserver
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
+
+  scripts:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: shellcheck foldersync/scripts/start.sh
+
+  package:
+    name: Package the macOS app
+    if: github.event_name != 'pull_request'
+    needs: [app, token-server]
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: foldersync
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: foldersync/package-lock.json
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: foldersync/tokenserver/go.mod
+          cache-dependency-path: foldersync/tokenserver/go.sum
+      - run: npm ci
+      - run: npm run build:tokenserver
+      - run: npm run package
+      - uses: actions/upload-artifact@v7
+        with:
+          name: FolderSync-mac-arm64
+          path: foldersync/out/FolderSync-mac-arm64.zip
+          retention-days: 30

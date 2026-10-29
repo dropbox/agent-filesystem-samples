@@ -56,7 +56,10 @@ export class Settings {
       if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
         return settings;
       }
-      throw new Error(`Couldn’t read ${path}: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(
+        `Couldn’t read ${path}: ${err instanceof Error ? err.message : String(err)}`,
+        {cause: err}
+      );
     }
     let parsed: unknown;
     try {

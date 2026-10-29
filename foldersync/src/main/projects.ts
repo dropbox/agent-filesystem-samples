@@ -400,7 +400,8 @@ export class Projects {
       }
     } catch (err) {
       throw new Error(
-        `The project was removed, but its sync state in ${stateDir} couldn’t be deleted: ${err instanceof Error ? err.message : String(err)}`
+        `The project was removed, but its sync state in ${stateDir} couldn’t be deleted: ${err instanceof Error ? err.message : String(err)}`,
+        {cause: err}
       );
     }
   }

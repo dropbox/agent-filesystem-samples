@@ -222,7 +222,7 @@ func removeUser(args []string) {
 		fmt.Printf("This permanently deletes the Dropbox account %s and all its files.\nType the user name (%s) to confirm: ", user.UserPublicID, user.Name)
 		answer, err := readLine()
 		// EOF is fine after a name without a newline, such as from a pipe.
-		if err != nil && !(errors.Is(err, io.EOF) && answer != "") {
+		if err != nil && (!errors.Is(err, io.EOF) || answer == "") {
 			log.Fatalf("read the confirmation: %v; nothing was changed", err)
 		}
 		if strings.TrimSpace(answer) != user.Name {

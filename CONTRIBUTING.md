@@ -16,15 +16,19 @@ Each top-level folder is one sample, with its own README, dependencies, and test
 
 ## Working on FolderSync
 
-You need Node.js 24 or later and Go 1.25 or later. The app runs on macOS on Apple silicon today.
+You need Node.js 24 or later and Go 1.27.3 or later. The app runs on macOS on Apple silicon today.
 
 ```sh
 cd foldersync
 npm ci
+npm run lint
+npm run format:check
 npm run typecheck
 npm test
-(cd tokenserver && go vet ./... && go test ./...)
+(cd tokenserver && go vet ./... && go test ./... && golangci-lint run)
 ```
+
+CI runs the same checks on every pull request.
 
 The tests don't need a Dropbox account. They run against an in-memory Dropbox (`test/fakeDropbox.ts`) and a fake API (`test/fakeRpc.ts`). To build the app's zip file, run `npm run build:tokenserver && npm run package`. FolderSync's [README](foldersync/README.md#develop) lists the environment variables for development.
 

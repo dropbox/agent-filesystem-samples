@@ -11,11 +11,12 @@ Public repo of DBX Agent Filesystem samples. Each top-level folder is one self-c
 
 From `foldersync/`, for what you changed:
 
-- `npm ci` once, then `npm run typecheck` and `npm test`. Tests use fakes and need no Dropbox account.
-- `cd tokenserver && go vet ./... && go test ./...`
+- `npm ci` once, then `npm run lint`, `npm run typecheck`, and `npm test`. Tests use fakes and need no Dropbox account.
+- `npm run format` formats the TypeScript and scripts with Prettier. CI checks it with `npm run format:check`.
+- `cd tokenserver && go vet ./... && go test ./... && golangci-lint run` (golangci-lint 2.15 or later, built with Go 1.27 or later).
 - `npm run build:tokenserver && npm run package`: builds `out/FolderSync-mac-arm64.zip` (macOS only).
+- CI (`.github/workflows/foldersync.yml`) runs these checks, plus ShellCheck and `govulncheck`, on every pull request.
 - Don't run anything that calls the real Dropbox API unless the user gives you a test app and credentials.
-- Format TypeScript with `npx prettier --write --print-width 100 --single-quote --no-bracket-spacing --trailing-comma es5 <files>`.
 
 ## Rules
 

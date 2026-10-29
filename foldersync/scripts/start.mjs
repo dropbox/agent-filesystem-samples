@@ -36,7 +36,7 @@ function savedAppKey() {
     if (err.code === 'ENOENT') {
       return '';
     }
-    throw new Error(`Can’t read the saved app key in ${appKeyPath}: ${err.message}`);
+    throw new Error(`Can’t read the saved app key in ${appKeyPath}: ${err.message}`, {cause: err});
   }
 }
 

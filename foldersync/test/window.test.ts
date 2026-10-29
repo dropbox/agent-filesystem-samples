@@ -17,8 +17,8 @@ const page = readFileSync(join(__dirname, '..', 'src', 'renderer', 'index.html')
 
 // A promise and the functions that settle it.
 function deferred<T>(): {promise: Promise<T>; resolve: (v: T) => void; reject: (e: Error) => void} {
-  let resolve = (_v: T): void => {};
-  let reject = (_e: Error): void => {};
+  let resolve: (v: T) => void = () => {};
+  let reject: (e: Error) => void = () => {};
   const promise = new Promise<T>((res, rej) => {
     resolve = res;
     reject = rej;

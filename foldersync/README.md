@@ -385,9 +385,10 @@ Mac the files need the quarantine flag removed, which `start.sh` does.
 ### Develop
 
 ```sh
+npm run lint
 npm run typecheck
 npm test
-cd tokenserver && go test ./...
+cd tokenserver && go vet ./... && go test ./...
 ```
 
 The tests run the sync pass against an in-memory Dropbox (`test/fakeDropbox.ts`)
