@@ -59,7 +59,7 @@ aren't notarized, so macOS won't run them while the flag is set.
 
 #### From source
 
-You need Node.js 24 or later and Go 1.25 or later. In the `foldersync` folder:
+You need Node.js 24 or later and Go 1.27.3 or later. In the `foldersync` folder:
 
 ```sh
 npm install                  # first time only
