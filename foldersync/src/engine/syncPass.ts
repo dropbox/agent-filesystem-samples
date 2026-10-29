@@ -1,5 +1,6 @@
 // One two-way sync pass for a project: compares local, remote, and the state
-// saved at the last sync, then uploads, downloads, and deletes.
+// saved at the last sync, then deletes, uploads, and downloads. Transfers and
+// deletes run several at once, in pools every project shares.
 import {randomUUID} from 'node:crypto';
 import {constants} from 'node:fs';
 import {
@@ -32,12 +33,18 @@ import {
 } from './dropboxApi';
 import {ensureRealFolder, sameStat, scanLocal, statOrUndefined, type LocalItem} from './localScan';
 import {STATE_DIR, baseName, isIgnoredName, isUnder, joinDropbox, pathKey} from './paths';
+import {Pool} from './pool';
 import type {LocalStat, Row, StateStore} from './stateStore';
 
 const MASS_DELETE_MIN_FILES = 20;
+// Uploads and downloads at once, across every project.
+const sharedTransfers = new Pool(6);
+// Deletes at once, across every project. Dropbox limits how many writes run at
+// once in an account, and more than one at a time was slower.
+const sharedDeletes = new Pool(1);
 const CHANGED_DURING_DOWNLOAD =
   'The file changed while it was being downloaded. It will be synced again.';
-// Saved rows are planned like Dropbox entries, so check them the same way:
+// Saved rows are actions like Dropbox entries, so check them the same way:
 // inside the project, and keyed by their own path. A damaged or edited state
 // database could otherwise point a delete at another project.
 function requireRowsInProject(rows: Map<string, Row>, dropboxRoot: string): void {
@@ -91,6 +98,10 @@ export interface PassOptions {
   // Called after each file is transferred, deleted, or saved as a conflict.
   onActivity?: (activity: Activity) => void;
   now?: () => Date;
+  // The pools for uploads and downloads, and for deletes. Every project's pass
+  // shares the same two by default.
+  transfers?: Pool;
+  deletes?: Pool;
 }
 
 type RemoteItem =
@@ -117,6 +128,17 @@ type Action =
   | {type: 'deleteLocalFolder'; key: string; local: LocalItem};
 
 const REMOTE_WRITES = new Set<Action['type']>(['upload', 'deleteRemote', 'createRemoteFolder']);
+// Run first, one at a time and shallowest first, so later actions find their
+// folders. Folder creates come before case-only renames.
+const FOLDERS_FIRST = new Set<Action['type']>([
+  'createRemoteFolder',
+  'createLocalFolder',
+  'renameLocal',
+]);
+// Run next, in the delete pool.
+const DELETES_NEXT = new Set<Action['type']>(['deleteRemote', 'deleteLocal']);
+// Run last, one at a time and deepest first, once the files in them are done.
+const FOLDERS_LAST = new Set<Action['type']>(['keepRemoteFolder', 'deleteLocalFolder']);
 
 export async function runSyncPass(opts: PassOptions): Promise<SyncSummary> {
   return new SyncPass(opts).run();
@@ -223,36 +245,64 @@ class SyncPass {
       return this.finish({count: deletes, total: rows.size});
     }
 
-    const order = (a: Action): number => {
-      switch (a.type) {
-        case 'createRemoteFolder':
-        case 'createLocalFolder':
-          return 0;
-        case 'deleteRemote':
-        case 'deleteLocal':
-          return 2;
-        case 'keepRemoteFolder':
-        case 'deleteLocalFolder':
-          return 3;
-        default:
-          return 1;
-      }
-    };
-    const depth = (a: Action): number => a.key.split('/').length;
-    actions.sort(
-      (a, b) => order(a) - order(b) || (order(a) === 3 ? depth(b) - depth(a) : depth(a) - depth(b))
-    );
-
     // Rows saved below are newer than the old cursor, so forget it first. If
     // the app quits partway through, the next pass lists from scratch.
     if (actions.length > 0) {
       store.clearCursor();
     }
     let done = 0;
-    for (const action of actions) {
-      done++;
-      this.step(`Syncing ${done} of ${actions.length}`);
+    const run = async (action: Action): Promise<void> => {
       await this.apply(action);
+      this.step(`Syncing ${++done} of ${actions.length}`);
+    };
+    // Runs actions at once, each in its pool if it has one. If one throws, the
+    // ones that haven't started are skipped, and this waits for the running
+    // ones before rethrowing, so nothing is still running when the pass ends.
+    const runAll = async (list: Action[], poolFor: (a: Action) => Pool | undefined) => {
+      let failed = false;
+      let firstError: unknown;
+      const task = (a: Action) => async (): Promise<void> => {
+        if (failed) {
+          return;
+        }
+        try {
+          await run(a);
+        } catch (err) {
+          if (!failed) {
+            failed = true;
+            firstError = err;
+          }
+          throw err;
+        }
+      };
+      await Promise.allSettled(list.map((a) => poolFor(a)?.run(task(a)) ?? task(a)()));
+      if (failed) {
+        throw firstError;
+      }
+    };
+    const depth = (a: Action): number => a.key.split('/').length;
+    const firstOrder = (a: Action): number => (a.type === 'renameLocal' ? 1 : 0);
+    for (const action of actions
+      .filter((a) => FOLDERS_FIRST.has(a.type))
+      .sort((a, b) => firstOrder(a) - firstOrder(b) || depth(a) - depth(b))) {
+      await run(action);
+    }
+    const deletePool = this.opts.deletes ?? sharedDeletes;
+    await runAll(
+      actions.filter((a) => DELETES_NEXT.has(a.type)),
+      () => deletePool
+    );
+    const transfers = this.opts.transfers ?? sharedTransfers;
+    await runAll(
+      actions.filter(
+        (a) => !FOLDERS_FIRST.has(a.type) && !DELETES_NEXT.has(a.type) && !FOLDERS_LAST.has(a.type)
+      ),
+      (a) => (a.type === 'upload' || a.type === 'download' ? transfers : undefined)
+    );
+    for (const action of actions
+      .filter((a) => FOLDERS_LAST.has(a.type))
+      .sort((a, b) => depth(b) - depth(a))) {
+      await run(action);
     }
     // list_folder/continue leaves out a path that was created and deleted after
     // the cursor, and blocked paths got no rows, so after writing to Dropbox or
@@ -352,7 +402,7 @@ class SyncPass {
     // items, and paths where a file and a folder have the same name.
     const blocked = new Set(skipped);
     // Saved rows of the other kind: the path was replaced by a file or a
-    // folder since the last sync, so it's planned as new.
+    // folder since the last sync, so it's actions as new.
     const replaced = new Set<string>();
     for (const key of keys) {
       const l = local.get(key);
@@ -621,7 +671,15 @@ class SyncPass {
     );
     // Our file was moved away, so the download takes Dropbox's name, which
     // can differ from ours in case.
-    await this.download(key, local.dropboxPath, undefined);
+    try {
+      await this.download(key, local.dropboxPath, undefined);
+    } catch (err) {
+      // The other version was deleted in Dropbox; only ours is left.
+      if (!isNotFound(err)) {
+        throw err;
+      }
+      this.opts.store.remove(key);
+    }
   }
 
   private async download(
@@ -942,7 +1000,15 @@ class SyncPass {
         throw err;
       });
       if (!st) {
-        await mkdir(dir);
+        try {
+          await mkdir(dir);
+        } catch (err) {
+          // Another action in the pass made it first.
+          if (!isErrnoCode(err, 'EEXIST') || !(await isRealFolder(dir))) {
+            throw err;
+          }
+          continue;
+        }
         // A folder deleted here is back, so it's synced again.
         const row = this.opts.store.row(pathKey(dropboxDir));
         if (row?.deletedHere) {
@@ -959,7 +1025,7 @@ class SyncPass {
   }
 }
 
-// A folder's sync state belongs to one account: planned against another
+// A folder's sync state belongs to one account: actions against another
 // account's Dropbox, it would delete or upload the wrong files. State saved
 // before accounts were recorded has none, and the first account to sync claims it.
 function requireSameAccount(store: StateStore, accountId: string, localRoot: string): void {
