@@ -1220,6 +1220,94 @@ describe('parallel sync', () => {
     const copies = [...dropbox.files.values()].filter((f) => f.data.toString() === 'mine');
     expect(copies).toHaveLength(1);
   });
+
+  it('waits for running transfers and skips queued ones when an action throws', async () => {
+    for (const n of ['a', 'b', 'c']) {
+      await writeLocal(`${n}.txt`, `old ${n}`);
+    }
+    await sync();
+    for (const n of ['a', 'b', 'c']) {
+      await writeLocal(`${n}.txt`, `new ${n}`);
+    }
+    // The first upload fails, and so does saving its failure, which ends the
+    // pass. The second is still running then. The third must never start.
+    let failFirst = (): void => {};
+    const firstFailed = new Promise<void>((resolve) => (failFirst = resolve));
+    const started: string[] = [];
+    let secondDone = false;
+    const api = filesWith({
+      upload: async (req) => {
+        started.push(req.dropboxPath);
+        if (started.length === 1) {
+          throw new Error('upload failed');
+        }
+        await firstFailed;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const meta = await dropbox.upload(req);
+        secondDone = true;
+        return meta;
+      },
+    });
+    const put = store.put.bind(store);
+    store.put = (row) => {
+      if (row.uploadFailed) {
+        failFirst();
+        throw new Error('database or disk is full');
+      }
+      put(row);
+    };
+
+    await expect(syncWith({api, transfers: new Pool(2)})).rejects.toThrow(
+      'database or disk is full'
+    );
+
+    expect(started).toHaveLength(2);
+    expect(secondDone).toBe(true);
+    // Only the second upload reached Dropbox.
+    const contents = ['a', 'b', 'c'].map((n) => dropbox.content(`/project/${n}.txt`));
+    expect(contents.filter((c) => c?.startsWith('new'))).toHaveLength(1);
+    expect(contents.filter((c) => c?.startsWith('old'))).toHaveLength(2);
+  });
+
+  it('waits for running deletes and skips queued ones when an action throws', async () => {
+    for (const n of ['a', 'b', 'c']) {
+      dropbox.put(`/project/${n}.txt`, n);
+    }
+    await sync();
+    for (const n of ['a', 'b', 'c']) {
+      await rm(join(dir, `${n}.txt`));
+    }
+    // Reporting progress fails after the first delete, which ends the pass.
+    // The second delete is still running then. The third must never start.
+    let failStep = (): void => {};
+    const stepFailed = new Promise<void>((resolve) => (failStep = resolve));
+    const started: string[] = [];
+    let secondDone = false;
+    const api = filesWith({
+      deleteV2: async (path, parentRev) => {
+        started.push(path);
+        if (started.length === 1) {
+          return dropbox.deleteV2(path, parentRev);
+        }
+        await stepFailed;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await dropbox.deleteV2(path, parentRev);
+        secondDone = true;
+      },
+    });
+    onStep = (step) => {
+      if (step.startsWith('Syncing')) {
+        failStep();
+        throw new Error('progress failed');
+      }
+    };
+
+    await expect(syncWith({api, deletes: new Pool(2)})).rejects.toThrow('progress failed');
+
+    expect(started).toHaveLength(2);
+    expect(secondDone).toBe(true);
+    expect(dropbox.files.size).toBe(1);
+  });
 });
 
 describe('conflicts with a delete', () => {

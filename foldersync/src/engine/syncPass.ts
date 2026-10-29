@@ -255,6 +255,31 @@ class SyncPass {
       await this.apply(action);
       this.step(`Syncing ${++done} of ${actions.length}`);
     };
+    // Runs actions at once, each in its pool if it has one. If one throws, the
+    // ones that haven't started are skipped, and this waits for the running
+    // ones before rethrowing, so nothing is still running when the pass ends.
+    const runAll = async (list: Action[], poolFor: (a: Action) => Pool | undefined) => {
+      let failed = false;
+      let firstError: unknown;
+      const task = (a: Action) => async (): Promise<void> => {
+        if (failed) {
+          return;
+        }
+        try {
+          await run(a);
+        } catch (err) {
+          if (!failed) {
+            failed = true;
+            firstError = err;
+          }
+          throw err;
+        }
+      };
+      await Promise.allSettled(list.map((a) => poolFor(a)?.run(task(a)) ?? task(a)()));
+      if (failed) {
+        throw firstError;
+      }
+    };
     const depth = (a: Action): number => a.key.split('/').length;
     const firstOrder = (a: Action): number => (a.type === 'renameLocal' ? 1 : 0);
     for (const action of actions
@@ -263,19 +288,16 @@ class SyncPass {
       await run(action);
     }
     const deletePool = this.opts.deletes ?? sharedDeletes;
-    await Promise.all(
-      actions.filter((a) => DELETES_NEXT.has(a.type)).map((a) => deletePool.run(() => run(a)))
+    await runAll(
+      actions.filter((a) => DELETES_NEXT.has(a.type)),
+      () => deletePool
     );
     const transfers = this.opts.transfers ?? sharedTransfers;
-    await Promise.all(
-      actions
-        .filter(
-          (a) =>
-            !FOLDERS_FIRST.has(a.type) && !DELETES_NEXT.has(a.type) && !FOLDERS_LAST.has(a.type)
-        )
-        .map((a) =>
-          a.type === 'upload' || a.type === 'download' ? transfers.run(() => run(a)) : run(a)
-        )
+    await runAll(
+      actions.filter(
+        (a) => !FOLDERS_FIRST.has(a.type) && !DELETES_NEXT.has(a.type) && !FOLDERS_LAST.has(a.type)
+      ),
+      (a) => (a.type === 'upload' || a.type === 'download' ? transfers : undefined)
     );
     for (const action of actions
       .filter((a) => FOLDERS_LAST.has(a.type))
