@@ -56,12 +56,12 @@ const [appDir] = await packager({
   icon,
   asar: true,
   prune: true,
-  // The app needs only dist/, build/icon.png, and package.json. It has no
-  // runtime dependencies, so node_modules stays out too.
-  ignore: [
-    /^\/(src|test|scripts|package|out|node_modules|README\.md|tsconfig.*\.json|vitest\.config\.mts|\.gitignore)(\/|$)/,
-    /^\/build\/icon\.svg$/,
-  ],
+  // The app needs only dist/, build/icon.png, and package.json, so everything
+  // else stays out, including files added later. It has no runtime
+  // dependencies, so node_modules stays out too.
+  ignore: (path) =>
+    !['', '/package.json', '/build', '/build/icon.png', '/dist'].includes(path) &&
+    !path.startsWith('/dist/'),
 });
 
 // The packager changes Electron's bundle but keeps its old ad-hoc signature,
