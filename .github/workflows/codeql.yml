@@ -1,0 +1,45 @@
+# CodeQL code scanning for the samples' Go and TypeScript.
+name: CodeQL
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - uses: actions/checkout@v7
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: foldersync/tokenserver/go.mod
+          cache-dependency-path: foldersync/tokenserver/go.sum
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - if: matrix.language == 'go'
+        working-directory: foldersync/tokenserver
+        run: go build ./...
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}

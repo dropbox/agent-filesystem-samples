@@ -129,7 +129,9 @@ export class FilesPanel {
       await api.deleteV2(path, rev);
     } catch (err) {
       if (isConflict(err)) {
-        throw new Error('It changed in Dropbox since the list was loaded. Refresh and try again.');
+        throw new Error('It changed in Dropbox since the list was loaded. Refresh and try again.', {
+          cause: err,
+        });
       }
       throw err;
     }

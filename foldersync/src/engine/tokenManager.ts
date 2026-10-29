@@ -138,7 +138,7 @@ async function callTokenServer(
     body = await res.json();
   } catch (err) {
     if (err instanceof Error && err.name === 'TimeoutError') {
-      throw new Error(`The token server at ${serverUrl} didn’t answer in time.`);
+      throw new Error(`The token server at ${serverUrl} didn’t answer in time.`, {cause: err});
     }
     body = undefined;
   }

@@ -9,7 +9,10 @@ export const TYPES_FILE = 'src/renderer/styles.module.d.css.ts';
 // The class names in the CSS's selectors, sorted.
 export function classNames(css) {
   const names = new Set();
-  for (const selector of css.replace(/\/\*[\s\S]*?\*\//g, '').split(/[{}]/).filter((_, i) => i % 2 === 0)) {
+  for (const selector of css
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split(/[{}]/)
+    .filter((_, i) => i % 2 === 0)) {
     if (selector.trimStart().startsWith('@')) {
       continue;
     }

@@ -381,7 +381,8 @@ class SyncPass {
       }
       if (isNotFound(err)) {
         throw new Error(
-          `The project folder ${dropboxRoot} is missing in Dropbox, so nothing was synced.`
+          `The project folder ${dropboxRoot} is missing in Dropbox, so nothing was synced.`,
+          {cause: err}
         );
       }
       throw err;
@@ -724,7 +725,8 @@ class SyncPass {
         // For example, a full disk. Put the previous version back.
         if (backup && !(await this.putBack(backup, replaced))) {
           throw new Error(
-            `Couldn’t save the download: ${errorMessage(err)}. The previous version is in ${await this.keep(backup)}.`
+            `Couldn’t save the download: ${errorMessage(err)}. The previous version is in ${await this.keep(backup)}.`,
+            {cause: err}
           );
         }
         throw err;
