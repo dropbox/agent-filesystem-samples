@@ -395,8 +395,29 @@ The tests run the sync pass against an in-memory Dropbox (`test/fakeDropbox.ts`)
 and a temporary folder, and the agent, undo, and token code against a fake
 API (`test/fakeRpc.ts`).
 
+#### Live tests
+
+`test/e2e/` has end-to-end tests against real Dropbox: two or three simulated
+computers per managed user, running the app's own project and sync code. They
+cover normal syncing and changes made at the same time: computers syncing at
+once, edits during an upload or a download, and concurrent work across
+projects and managed users. Each run creates throwaway managed users and
+deletes them at the end.
+
+Start a token server first (`npm start` or `start.sh`), then:
+
+```sh
+FOLDERSYNC_E2E_TOKEN_SERVER=http://127.0.0.1:8787 npm run test:e2e
+```
+
+`npm test` never runs them. A run stops at once if `FOLDERSYNC_E2E_TOKEN_SERVER`
+isn't set or the token server doesn't answer. A full run takes about 10 minutes.
+A failed run keeps its log in `out/e2e/`, with tokens and the app secret
+redacted.
+
 | Variable | Use |
 |---|---|
+| `FOLDERSYNC_E2E_TOKEN_SERVER` | The token server `npm run test:e2e` signs its test users in through |
 | `FOLDERSYNC_PORT` | The token server's port (default 8787). `start.sh` and `npm start` start the token server on it, and the app connects to it |
 | `FOLDERSYNC_HOME` | Use another folder instead of `~/.foldersync`, for example in tests. It also moves Electron's data folder, so each one has its own single-instance lock |
 | `FOLDERSYNC_PROJECTS` | Where new project folders go (default `~/FolderSync`) |

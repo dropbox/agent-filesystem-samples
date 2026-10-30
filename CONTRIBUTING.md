@@ -30,6 +30,8 @@ npm test
 
 CI runs the same checks on every pull request.
 
+The live tests in `test/e2e/` run against real Dropbox with your own test app; see "Live tests" in FolderSync's [README](foldersync/README.md#live-tests). Run them before a pull request that changes sync, tokens, or agents, and include the result in it. CI doesn't run them, so the repo never holds an app secret. Before a release, a maintainer runs them and includes the result in the pull request that changes the version.
+
 The tests don't need a Dropbox account. They run against an in-memory Dropbox (`test/fakeDropbox.ts`) and a fake API (`test/fakeRpc.ts`). To build the app's zip file, run `npm run build:tokenserver && npm run package`. FolderSync's [README](foldersync/README.md#develop) lists the environment variables for development.
 
 ## Guidelines for sample code
