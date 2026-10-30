@@ -15,6 +15,7 @@
     "package": "node scripts/package.mjs",
     "start": "npm run build && node scripts/start.mjs",
     "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.mts",
     "typecheck": "node scripts/css-types.mjs && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
   },
   "devDependencies": {

@@ -16,7 +16,14 @@ From `foldersync/`, for what you changed:
 - `cd tokenserver && go vet ./... && go test ./... && golangci-lint run` (golangci-lint 2.15 or later, built with Go 1.27 or later).
 - `npm run build:tokenserver && npm run package`: builds `out/FolderSync-mac-arm64.zip` (macOS only).
 - CI (`.github/workflows/foldersync.yml`) runs these checks, plus ShellCheck and `govulncheck`, on every pull request.
-- Don't run anything that calls the real Dropbox API unless the user gives you a test app and credentials.
+
+## Local live e2e tests
+
+- `npm run test:e2e` runs the local live e2e tests in `test/e2e/` against real Dropbox through a token server. It creates and deletes managed users. Running them before a PR that changes sync, tokens, agents, or the token server is highly recommended. A maintainer runs them before every release.
+- Never ask for, read, or pass on an app secret. Ask the user to run `npm run build:tokenserver && npm start` for their test app in their own terminal. It asks for the secret without showing it and never saves it.
+- Then run `FOLDERSYNC_E2E_TOKEN_SERVER=http://127.0.0.1:8787 npm run test:e2e` (about 10 minutes) and put the result in the PR's test plan.
+- Only use an app the user named as a test app.
+- A run stops at once if the token server isn't running. A failed run keeps its log in `out/e2e/`, with tokens and the secret redacted. Don't paste tokens or connection keys anywhere.
 
 ## Rules
 
