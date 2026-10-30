@@ -94,6 +94,90 @@ function held(): {
   return {reached, reachedPromise, release, released};
 }
 
+// Fails a test whose held computer finished its sync without reaching the gate.
+function notReached(computer: string, request: string): never {
+  throw new Error(`${computer} finished syncing without its ${request} of a.txt`);
+}
+
+// Lets callers through together once `parties` of them have arrived, or when
+// opened early. Fails a caller that waits more than a minute. met() says
+// whether all of them arrived before any wait failed.
+function barrier(parties: number): {
+  arrive: () => Promise<void>;
+  open: () => void;
+  met: () => boolean;
+} {
+  let arrived = 0;
+  let met = false;
+  let timedOut = false;
+  let open = (): void => {};
+  const opened = new Promise<void>((r) => (open = r));
+  return {
+    open,
+    met: () => met,
+    arrive: async () => {
+      arrived++;
+      if (arrived === parties) {
+        met = !timedOut;
+        open();
+      }
+      let timer: NodeJS.Timeout | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new Error(`only ${arrived} of ${parties} computers reached the barrier`));
+        }, 60_000);
+      });
+      try {
+        await Promise.race([opened, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+// A computer's first upload or delete of a file with this name.
+type Hold = [Computer, 'upload' | 'delete', string];
+
+// Syncs the computers at once, and holds each one's request for its file until
+// all of them send theirs, so the requests reach Dropbox together.
+async function syncAtOnce(p: string, holds: Hold[]): Promise<void> {
+  const together = barrier(holds.length);
+  for (const [c, kind, name] of holds) {
+    const wait = once(name, together.arrive);
+    if (kind === 'upload') {
+      c.hooks.beforeUpload = (req) => wait(req.dropboxPath);
+    } else {
+      c.hooks.beforeDelete = (path) => wait(path);
+    }
+  }
+  try {
+    // A failed sync opens the barrier so the others finish before this throws.
+    const results = await Promise.allSettled(
+      holds.map(([c]) =>
+        c.sync(p).catch((err: unknown) => {
+          together.open();
+          throw err;
+        })
+      )
+    );
+    const failed = results.find((r) => r.status === 'rejected');
+    if (failed) {
+      throw failed.reason;
+    }
+    // A sync reports a failed request as an issue, so check the barrier too.
+    if (!together.met()) {
+      throw new Error('the requests didn’t reach the barrier together');
+    }
+  } finally {
+    for (const [c] of holds) {
+      c.hooks.beforeUpload = undefined;
+      c.hooks.beforeDelete = undefined;
+    }
+  }
+}
+
 describe.skipIf(!SERVER)('live races', () => {
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), 'foldersync-e2e-races-'));
@@ -125,7 +209,10 @@ describe.skipIf(!SERVER)('live races', () => {
       await c1.write(p, 'a.txt', 'from c1');
       await c2.write(p, 'a.txt', 'from c2');
 
-      await Promise.all([c1.sync(p), c2.sync(p)]);
+      await syncAtOnce(p, [
+        [c1, 'upload', 'a.txt'],
+        [c2, 'upload', 'a.txt'],
+      ]);
       await settle(p, [c1, c2]);
 
       expect(await agreedContents(p, [c1, c2])).toEqual(['from c1', 'from c2']);
@@ -136,7 +223,10 @@ describe.skipIf(!SERVER)('live races', () => {
       await c1.write(p, 'new.txt', 'from c1');
       await c2.write(p, 'new.txt', 'from c2');
 
-      await Promise.all([c1.sync(p), c2.sync(p)]);
+      await syncAtOnce(p, [
+        [c1, 'upload', 'new.txt'],
+        [c2, 'upload', 'new.txt'],
+      ]);
       await settle(p, [c1, c2]);
 
       expect(await agreedContents(p, [c1, c2])).toEqual(['from c1', 'from c2']);
@@ -148,7 +238,11 @@ describe.skipIf(!SERVER)('live races', () => {
       await c2.write(p, 'a.txt', 'from c2');
       await c3.write(p, 'a.txt', 'from c3');
 
-      await Promise.all([c1.sync(p), c2.sync(p), c3.sync(p)]);
+      await syncAtOnce(p, [
+        [c1, 'upload', 'a.txt'],
+        [c2, 'upload', 'a.txt'],
+        [c3, 'upload', 'a.txt'],
+      ]);
       await settle(p, [c1, c2, c3]);
 
       expect(await agreedContents(p, [c1, c2, c3])).toEqual(['from c1', 'from c2', 'from c3']);
@@ -164,7 +258,10 @@ describe.skipIf(!SERVER)('live races', () => {
       await c1.write(p, 'a.txt', 'edited');
       await rm(c2.local(p, 'a.txt'));
 
-      await Promise.all([c1.sync(p), c2.sync(p)]);
+      await syncAtOnce(p, [
+        [c1, 'upload', 'a.txt'],
+        [c2, 'delete', 'a.txt'],
+      ]);
       await settle(p, [c1, c2]);
 
       expect(await agreedContents(p, [c1, c2])).toEqual(['edited', 'other']);
@@ -182,9 +279,12 @@ describe.skipIf(!SERVER)('live races', () => {
       c1.hooks.beforeUpload = (req) => wait(req.dropboxPath);
 
       const pass1 = c1.sync(p);
-      await gate.reachedPromise;
-      await c2.sync(p);
-      gate.release();
+      try {
+        await Promise.race([gate.reachedPromise, pass1.then(() => notReached('c1', 'upload'))]);
+        await c2.sync(p);
+      } finally {
+        gate.release();
+      }
       const s1 = await pass1.finally(() => (c1.hooks.beforeUpload = undefined));
       await settle(p, [c1, c2]);
 
@@ -204,9 +304,12 @@ describe.skipIf(!SERVER)('live races', () => {
       });
 
       const pass2 = c2.sync(p);
-      await gate.reachedPromise;
-      await c1.sync(p);
-      gate.release();
+      try {
+        await Promise.race([gate.reachedPromise, pass2.then(() => notReached('c2', 'delete'))]);
+        await c1.sync(p);
+      } finally {
+        gate.release();
+      }
       await pass2.finally(() => (c2.hooks.beforeDelete = undefined));
       await settle(p, [c1, c2]);
 
@@ -218,7 +321,10 @@ describe.skipIf(!SERVER)('live races', () => {
       await rm(c1.local(p, 'a.txt'));
       await rm(c2.local(p, 'a.txt'));
 
-      await Promise.all([c1.sync(p), c2.sync(p)]);
+      await syncAtOnce(p, [
+        [c1, 'delete', 'a.txt'],
+        [c2, 'delete', 'a.txt'],
+      ]);
       await settle(p, [c1, c2]);
 
       expect(await agreedContents(p, [c1, c2])).toEqual(['other']);
@@ -230,7 +336,10 @@ describe.skipIf(!SERVER)('live races', () => {
       await rm(c1.local(p, 'f'), {recursive: true});
       await c2.write(p, 'f/new.txt', 'new');
 
-      await Promise.all([c1.sync(p), c2.sync(p)]);
+      await syncAtOnce(p, [
+        [c1, 'delete', 'a.txt'],
+        [c2, 'upload', 'new.txt'],
+      ]);
       await settle(p, [c1, c2]);
 
       expect(await agreedContents(p, [c1, c2])).toEqual(['new']);
@@ -323,7 +432,10 @@ describe.skipIf(!SERVER)('live races', () => {
       await c1.write(p, 'from-alice.txt', 'alice');
       await bobs.write(p, 'from-bob.txt', 'bob');
 
-      await Promise.all([c1.sync(p), bobs.sync(p)]);
+      await syncAtOnce(p, [
+        [c1, 'upload', 'from-alice.txt'],
+        [bobs, 'upload', 'from-bob.txt'],
+      ]);
 
       expect(await remotePaths(c1, p)).toEqual(new Set(['from-alice.txt']));
       expect(await remotePaths(bobs, p)).toEqual(new Set(['from-bob.txt']));

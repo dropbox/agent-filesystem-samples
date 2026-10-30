@@ -38,10 +38,12 @@ import type {LocalStat, Row, StateStore} from './stateStore';
 
 const MASS_DELETE_MIN_FILES = 20;
 // Uploads and downloads at once, across every project.
-const sharedTransfers = new Pool(6);
+export const TRANSFERS_AT_ONCE = 6;
 // Deletes at once, across every project. Dropbox limits how many writes run at
 // once in an account, and more than one at a time was slower.
-const sharedDeletes = new Pool(1);
+export const DELETES_AT_ONCE = 1;
+const sharedTransfers = new Pool(TRANSFERS_AT_ONCE);
+const sharedDeletes = new Pool(DELETES_AT_ONCE);
 const CHANGED_DURING_DOWNLOAD =
   'The file changed while it was being downloaded. It will be synced again.';
 // Saved rows are actions like Dropbox entries, so check them the same way:
