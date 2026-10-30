@@ -1,10 +1,8 @@
-# Lints the GitHub Actions workflows.
+# Lints the GitHub Actions workflows. CI runs it.
 name: Workflows
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_call:
 
 permissions:
   contents: read

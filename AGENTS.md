@@ -15,7 +15,8 @@ From `foldersync/`, for what you changed:
 - `npm run format` formats the TypeScript and scripts with Prettier. CI checks it with `npm run format:check`.
 - `cd tokenserver && go vet ./... && go test ./... && golangci-lint run` (golangci-lint 2.15 or later, built with Go 1.27 or later).
 - `npm run build:tokenserver && npm run package`: builds `out/FolderSync-mac-arm64.zip` (macOS only).
-- CI (`.github/workflows/foldersync.yml`) runs these checks, plus ShellCheck and `govulncheck`, on every pull request.
+- CI (`.github/workflows/ci.yml`) calls `foldersync.yml`, which runs these checks plus ShellCheck and `govulncheck` when a pull request changes `foldersync/` or FolderSync's workflows; its jobs skip otherwise. A new sample needs its own workflow with the same first job, called from `ci.yml` and added to `all-passed`.
+- Releases: `.github/workflows/foldersync-release.yml`, run by hand on `main`. See "Releasing FolderSync" in CONTRIBUTING.md.
 
 ## Local live e2e tests
 

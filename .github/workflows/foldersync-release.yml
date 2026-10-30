@@ -1,0 +1,94 @@
+# Publishes a FolderSync release, run by hand from main. It checks and builds
+# main with the FolderSync workflow, then creates the GitHub release
+# foldersync-v<version> with the zip. Bump the version first; see
+# CONTRIBUTING.md.
+name: FolderSync release
+
+on:
+  workflow_dispatch:
+    inputs:
+      e2e-passed:
+        description: The local live e2e tests passed on this commit
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: foldersync-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Check the release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Require main and a local e2e pass
+        env:
+          REF: ${{ github.ref }}
+          E2E_PASSED: ${{ inputs.e2e-passed }}
+        run: |
+          if [ "$REF" != refs/heads/main ]; then
+            echo "::error::Release from main, not $REF."
+            exit 1
+          fi
+          if [ "$E2E_PASSED" != true ]; then
+            echo "::error::Run the local live e2e tests on this commit first, then check the box."
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+      - id: version
+        run: |
+          version=$(jq -r .version foldersync/package.json)
+          # Like 0.1.0, or 0.1.0-preview.1 for a pre-release.
+          if ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
+            echo "::error::foldersync/package.json has an invalid version: $version"
+            exit 1
+          fi
+          tag="foldersync-v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "::error::$tag already exists. Bump the version in foldersync/package.json."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag"
+
+  build:
+    name: Check and build
+    needs: prepare
+    uses: ./.github/workflows/foldersync.yml
+
+  publish:
+    name: Publish the release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: FolderSync-mac-arm64
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          shasum -a 256 FolderSync-mac-arm64.zip > SHA256SUMS
+          cat > notes.md << EOF
+          FolderSync $VERSION for macOS on Apple silicon, built from $SHA.
+
+          Download \`FolderSync-mac-arm64.zip\` and follow [Run FolderSync](https://github.com/$REPO/tree/foldersync-v$VERSION/foldersync#run-foldersync). The app isn't notarized; \`start.sh\` removes the flag macOS puts on downloaded files.
+          EOF
+          # A version with a hyphen, like 0.1.0-preview.1, is a pre-release.
+          prerelease=()
+          if [[ "$VERSION" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "foldersync-v$VERSION" FolderSync-mac-arm64.zip SHA256SUMS \
+            --repo "$REPO" --target "$SHA" --title "FolderSync $VERSION" \
+            --notes-file notes.md "${prerelease[@]}"

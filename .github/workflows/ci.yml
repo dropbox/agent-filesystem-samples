@@ -1,0 +1,73 @@
+# Runs every check on pull requests, pushes to main, and once a week. Each
+# sample's workflow skips its jobs when the sample didn't change.
+# "All checks passed" sums up the results and is the one check to require.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  workflows:
+    name: Workflows
+    uses: ./.github/workflows/workflows.yml
+
+  codeql:
+    name: CodeQL
+    uses: ./.github/workflows/codeql.yml
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+  foldersync:
+    name: FolderSync
+    uses: ./.github/workflows/foldersync.yml
+
+  all-passed:
+    name: All checks passed
+    if: always()
+    needs: [workflows, codeql, foldersync]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          WORKFLOWS: ${{ needs.workflows.result }}
+          CODEQL: ${{ needs.codeql.result }}
+          FOLDERSYNC: ${{ needs.foldersync.result }}
+        run: |
+          icon() {
+            case "$1" in
+              success) echo "✅" ;;
+              skipped) echo "⏭️" ;;
+              *) echo "❌" ;;
+            esac
+          }
+          {
+            echo "## CI"
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| Workflows (actionlint) | $(icon "$WORKFLOWS") $WORKFLOWS |"
+            echo "| CodeQL | $(icon "$CODEQL") $CODEQL |"
+            echo "| FolderSync | $(icon "$FOLDERSYNC") $FOLDERSYNC |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for result in "$WORKFLOWS" "$CODEQL" "$FOLDERSYNC"; do
+            case "$result" in
+              success | skipped) ;;
+              *)
+                echo "::error::A check didn't pass. See the table in this run's summary."
+                exit 1
+                ;;
+            esac
+          done

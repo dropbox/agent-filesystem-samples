@@ -1,23 +1,56 @@
-# Checks FolderSync on every pull request and push to main. After a merge,
-# or when run by hand, it also builds the macOS zip and keeps it as an artifact.
+# Checks FolderSync when a pull request or push to main changes it. CI and the
+# release workflow run it, and it can be run by hand. After a merge, by hand, or
+# for a release, it also builds the macOS zip and keeps it as an artifact. Jobs
+# skip, rather than not run, when FolderSync didn't change.
 name: FolderSync
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: foldersync-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
+  changes:
+    name: Find FolderSync changes
+    runs-on: ubuntu-latest
+    outputs:
+      foldersync: ${{ steps.diff.outputs.foldersync }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          case "$EVENT" in
+            pull_request) range="$PR_BASE...$PR_HEAD" ;;
+            push) range="$BEFORE..$AFTER" ;;
+            *) range="" ;;
+          esac
+          # Run by hand, weekly, for a release, or on a new branch: check everything.
+          if [ -z "$range" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            changed=true
+          # -z lists paths unquoted, even with non-ASCII names.
+          elif git diff -z --name-only --no-renames "$range" |
+            grep -qzE '^(foldersync/|\.github/workflows/(foldersync|ci\.yml))'; then
+            changed=true
+          else
+            changed=false
+          fi
+          echo "foldersync=$changed" >> "$GITHUB_OUTPUT"
+          echo "FolderSync changed: $changed"
+
   app:
     name: App (lint, typecheck, test)
+    needs: changes
+    if: needs.changes.outputs.foldersync == 'true'
     runs-on: macos-latest
     defaults:
       run:
@@ -37,6 +70,8 @@ jobs:
 
   token-server:
     name: Token server (vet, test, lint, vulnerabilities)
+    needs: changes
+    if: needs.changes.outputs.foldersync == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -60,6 +95,8 @@ jobs:
 
   scripts:
     name: Shell scripts
+    needs: changes
+    if: needs.changes.outputs.foldersync == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -67,8 +104,8 @@ jobs:
 
   package:
     name: Package the macOS app
-    if: github.event_name != 'pull_request'
-    needs: [app, token-server]
+    if: github.event_name != 'pull_request' && github.event_name != 'schedule'
+    needs: [app, token-server, scripts]
     runs-on: macos-latest
     defaults:
       run:
@@ -92,3 +129,49 @@ jobs:
           name: FolderSync-mac-arm64
           path: foldersync/out/FolderSync-mac-arm64.zip
           retention-days: 30
+
+  result:
+    name: FolderSync result
+    if: always()
+    needs: [changes, app, token-server, scripts, package]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CHANGED: ${{ needs.changes.outputs.foldersync }}
+          CHANGES: ${{ needs.changes.result }}
+          APP: ${{ needs.app.result }}
+          TOKEN_SERVER: ${{ needs.token-server.result }}
+          SCRIPTS: ${{ needs.scripts.result }}
+          PACKAGE: ${{ needs.package.result }}
+        run: |
+          icon() {
+            case "$1" in
+              success) echo "✅" ;;
+              skipped) echo "⏭️" ;;
+              *) echo "❌" ;;
+            esac
+          }
+          {
+            echo "## FolderSync"
+            echo
+            if [ "$CHANGED" != true ]; then
+              echo "FolderSync didn't change, so its checks skipped."
+              echo
+            fi
+            echo "| Job | Result |"
+            echo "| --- | --- |"
+            echo "| Find FolderSync changes | $(icon "$CHANGES") $CHANGES |"
+            echo "| App (lint, typecheck, test) | $(icon "$APP") $APP |"
+            echo "| Token server (vet, test, lint, vulnerabilities) | $(icon "$TOKEN_SERVER") $TOKEN_SERVER |"
+            echo "| Shell scripts | $(icon "$SCRIPTS") $SCRIPTS |"
+            echo "| Package the macOS app | $(icon "$PACKAGE") $PACKAGE |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for result in "$CHANGES" "$APP" "$TOKEN_SERVER" "$SCRIPTS" "$PACKAGE"; do
+            case "$result" in
+              success | skipped) ;;
+              *)
+                echo "::error::A FolderSync job didn't pass."
+                exit 1
+                ;;
+            esac
+          done
