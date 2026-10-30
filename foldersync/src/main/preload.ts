@@ -6,6 +6,7 @@ import type {
   ChangeGroup,
   FileAction,
   FoldersyncApi,
+  PlatformNames,
   ProjectAction,
   ProjectInfo,
   RemoteEntry,
@@ -19,6 +20,7 @@ import type {
 
 const api: FoldersyncApi = {
   getSetup: (): Promise<SetupInfo> => ipcRenderer.invoke('get-setup'),
+  platformNames: (): Promise<PlatformNames> => ipcRenderer.invoke('platform-names'),
   signIn: (name, tokenServerUrl): Promise<SignInResult> =>
     ipcRenderer.invoke('sign-in', name, tokenServerUrl),
   signOut: (): Promise<void> => ipcRenderer.invoke('sign-out'),
