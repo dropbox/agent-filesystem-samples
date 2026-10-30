@@ -1,5 +1,5 @@
-// Adds each live test's result to the run log, deletes the log when every test
-// passed, and keeps it when the run failed.
+// Adds each local live e2e test's result to the run log, deletes the log when
+// every test passed, and keeps it when the run failed.
 import {rmSync} from 'node:fs';
 
 import type {Reporter, TestCase, TestModule} from 'vitest/node';
@@ -25,7 +25,7 @@ export default class LogReporter implements Reporter {
     if (reason === 'passed' && errors.length === 0) {
       rmSync(log, {force: true});
     } else {
-      console.log(`\nThe live test log is kept at ${log}`);
+      console.log(`\nThe local live e2e test log is kept at ${log}`);
     }
   }
 }

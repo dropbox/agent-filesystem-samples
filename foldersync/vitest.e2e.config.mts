@@ -1,6 +1,6 @@
 import {defineConfig} from 'vitest/config';
 
-// Live tests against real Dropbox, through the token server at
+// Local live e2e tests against real Dropbox, through the token server at
 // FOLDERSYNC_E2E_TOKEN_SERVER. Files run one at a time, since each signs in its
 // own managed users.
 export default defineConfig({

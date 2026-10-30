@@ -1,5 +1,6 @@
-// The live tests' run log. Lines go to the file in FOLDERSYNC_E2E_LOG, with
-// tokens, connection keys, and the app secret replaced by <redacted>.
+// The local live e2e tests' run log. Lines go to the file in
+// FOLDERSYNC_E2E_LOG, with tokens, connection keys, and the app secret replaced
+// by <redacted>.
 import {appendFileSync} from 'node:fs';
 
 export function redact(text: string): string {

@@ -1,6 +1,6 @@
-// Live tests for changes that happen at the same time: computers syncing at
-// once, edits during a transfer, and concurrent work across projects and
-// managed users. Each test uses a project of its own.
+// Local live e2e tests for changes that happen at the same time: computers
+// syncing at once, edits during a transfer, and concurrent work across projects
+// and managed users. Each test uses a project of its own.
 import {mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';

@@ -395,14 +395,16 @@ The tests run the sync pass against an in-memory Dropbox (`test/fakeDropbox.ts`)
 and a temporary folder, and the agent, undo, and token code against a fake
 API (`test/fakeRpc.ts`).
 
-#### Live tests
+#### Local live e2e tests
 
-`test/e2e/` has end-to-end tests against real Dropbox: two or three simulated
-computers per managed user, running the app's own project and sync code. They
-cover normal syncing and changes made at the same time: computers syncing at
-once, edits during an upload or a download, and concurrent work across
-projects and managed users. Each run creates throwaway managed users and
-deletes them at the end.
+`test/e2e/` has end-to-end tests that run on your computer against real
+Dropbox. Each managed user gets two or three simulated computers running the
+app's own project and sync code. The tests cover normal syncing and changes
+made at the same time: computers syncing at once, edits during an upload or a
+download, and concurrent work across projects and managed users. Each run
+creates throwaway managed users and deletes them at the end. We highly
+recommend running them with your own app's credentials before changing sync,
+tokens, or agents.
 
 Start a token server first (`npm start` or `start.sh`), then:
 

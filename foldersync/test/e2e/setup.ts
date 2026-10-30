@@ -1,5 +1,5 @@
-// Runs once before the live tests: stops at once if there's no token server to
-// test against, and starts this run's log in out/e2e.
+// Runs once before the local live e2e tests: stops at once if there's no token
+// server to test against, and starts this run's log in out/e2e.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
@@ -8,7 +8,7 @@ export default async function setup(): Promise<void> {
   if (!server) {
     throw new Error(
       'Set FOLDERSYNC_E2E_TOKEN_SERVER to a running token server, like http://127.0.0.1:8787. ' +
-        'See "Live tests" in README.md.'
+        'See "Local live e2e tests" in README.md.'
     );
   }
   try {
@@ -24,6 +24,6 @@ export default async function setup(): Promise<void> {
   const dir = join(process.cwd(), 'out', 'e2e');
   mkdirSync(dir, {recursive: true});
   const log = join(dir, `run-${new Date().toISOString().replace(/[:.]/g, '-')}.log`);
-  writeFileSync(log, `Live tests against ${server}\n`);
+  writeFileSync(log, `Local live e2e tests against ${server}\n`);
   process.env.FOLDERSYNC_E2E_LOG = log;
 }
