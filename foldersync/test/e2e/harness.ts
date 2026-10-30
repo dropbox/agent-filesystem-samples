@@ -11,6 +11,8 @@ import {
   type TokenSource,
   type UploadRequest,
 } from '../../src/engine/dropboxApi';
+import {Pool} from '../../src/engine/pool';
+import {DELETES_AT_ONCE, TRANSFERS_AT_ONCE} from '../../src/engine/syncPass';
 import {HttpAgentDirectory, HttpTokenProvider, TokenManager} from '../../src/engine/tokenManager';
 import {Settings} from '../../src/main/config';
 import {ProjectClients} from '../../src/main/projectClients';
@@ -128,6 +130,8 @@ export class Computer {
       accountId: () => user.accountId,
       onStatus: () => {},
       onActivity: () => {},
+      // Each computer runs its own app, with its own pools, as on separate Macs.
+      pools: {transfers: new Pool(TRANSFERS_AT_ONCE), deletes: new Pool(DELETES_AT_ONCE)},
     });
     return new Computer(label, dir, user, projects, clients, hooks, userTokens);
   }

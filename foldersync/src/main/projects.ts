@@ -7,6 +7,7 @@ import {basename, dirname, join, resolve, sep} from 'node:path';
 import {groupChanges, listChanges, startUndo, undoStatus, type UndoStatus} from '../engine/agents';
 import {ensureRealFolder, refuseLinks} from '../engine/localScan';
 import {STATE_DIR, projectKey} from '../engine/paths';
+import type {Pool} from '../engine/pool';
 import {STATE_DB_FILES, openStateStore} from '../engine/stateStore';
 import {runSyncPass} from '../engine/syncPass';
 import type {Activity, ChangeGroup, ProjectInfo, SyncStatus, SyncSummary} from '../shared/types';
@@ -33,6 +34,9 @@ export interface ProjectsOptions {
   onStatus: (project: string, status: SyncStatus) => void;
   onActivity: (project: string, activity: Activity) => void;
   sleep?: (ms: number) => Promise<void>;
+  // The sync passes' transfer and delete pools. By default every Projects in
+  // the process shares one pair, as the app does.
+  pools?: {transfers: Pool; deletes: Pool};
 }
 
 const ACCOUNT_CHANGING = 'Wait for the account change to finish, then try again.';
@@ -255,6 +259,8 @@ export class Projects {
         allowMassDelete,
         onStep: (step) => this.opts.onStatus(name, {kind: 'syncing', step}),
         onActivity: (activity) => this.recordActivity(name, activity),
+        transfers: this.opts.pools?.transfers,
+        deletes: this.opts.pools?.deletes,
       });
       this.opts.onStatus(name, {kind: 'idle', last: summary});
       return summary;
