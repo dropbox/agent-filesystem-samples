@@ -1,6 +1,6 @@
 {
   "name": "foldersync",
-  "version": "0.1.0",
+  "version": "0.1.0-preview.1",
   "private": true,
   "description": "Folder sync sample for Agent Filesystem managed users",
   "main": "dist/main/main.js",
