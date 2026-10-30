@@ -22,14 +22,14 @@ let c1: Computer;
 let c2: Computer;
 
 // Folders one computer deleted stay in Dropbox, empty, so the other computer
-// keeps them. The comparison leaves them out.
+// keeps them. The comparison leaves out those folders but not files in them.
 const keptEmpty: string[] = [];
 const kept = (path: string): boolean =>
   keptEmpty.some((k) => path === k || path.startsWith(`${k}/`));
 
 async function expectSameTrees(): Promise<void> {
   const entries = (t: Map<string, string>): [string, string][] =>
-    [...t.entries()].filter(([path]) => !kept(path)).sort();
+    [...t.entries()].filter(([path, kind]) => !(kind === 'dir' && kept(path))).sort();
   expect(entries(await c2.tree(P))).toEqual(entries(await c1.tree(P)));
 }
 
