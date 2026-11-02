@@ -49,7 +49,7 @@ The workflow runs FolderSync's checks, builds the zip, and creates the GitHub re
 
 - People copy sample code, so keep it small and easy to read. Comments say what the code does.
 - Never commit real app keys, secrets, tokens, user IDs, or personal paths. Use placeholders such as `<your_app_key>`.
-- Tests mustn't depend on the computer they run on. Don't assume a case-insensitive file system, a non-root user, or that `chmod` blocks access.
+- Tests mustn't depend on the computer they run on. Don't assume a case-insensitive file system, a non-root user, or that `chmod` blocks access. To run the tests on a case-sensitive disk on a Mac, make one with `hdiutil create -size 512m -fs "Case-sensitive APFS" -volname cs cs.dmg && hdiutil attach cs.dmg`, then run `TMPDIR=/Volumes/cs npm test`.
 - FolderSync must never delete or overwrite a file that changed in Dropbox since the last sync. Add a test for any change to the sync rules.
 
 ## Pull requests

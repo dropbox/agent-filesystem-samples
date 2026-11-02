@@ -797,9 +797,10 @@ describe('sync pass', () => {
     // a0.txt downloads before the rename reaches shots/a.txt.
     dropbox.put('/project/a0.txt', 'new');
     dropbox.renameCase('/project/shots', '/project/Shots');
+    // Case-only renames run before downloads, so the folder is Shots by now.
     dropbox.afterDownload = async () => {
       dropbox.afterDownload = undefined;
-      await writeLocal('shots/a.txt', 'edited after the scan');
+      await writeLocal('Shots/a.txt', 'edited after the scan');
     };
 
     await sync();
