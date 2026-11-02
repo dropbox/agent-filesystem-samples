@@ -30,7 +30,7 @@ From `foldersync/`, for what you changed:
 
 - Sync must never delete or overwrite a file that changed in Dropbox since the last sync: delete with `delete_v2` and `parent_rev`, upload edits in `update` mode with the known rev, and upload new files in `add` mode.
 - No fallback logic or made-up defaults. Fail with a clear error.
-- Tests must not assume a case-insensitive file system, a non-root user, or that `chmod` blocks access. Skip with a reason where the platform can't support a test.
+- Tests must not assume a case-insensitive file system, a non-root user, or that `chmod` blocks access. Skip with a reason where the platform can't support a test. Check case with `TMPDIR=<case-sensitive volume> npm test`; tests make their temp folders under `TMPDIR`.
 - Public repo: no secrets, tokens, user IDs, internal hostnames or links, or people's names in code, commits, or pull requests. Use placeholders like `<your_app_key>`.
 - Don't describe security problems in public issues, pull requests, or commits. See `SECURITY.md`.
 - Keep comments short and about what the code does. Match the surrounding code.
