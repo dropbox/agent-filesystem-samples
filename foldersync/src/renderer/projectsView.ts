@@ -1,7 +1,7 @@
 // The projects sidebar and the open project: Sync now, Undo, the project menu,
 // and creating and deleting projects.
 import {projectKey} from '../engine/paths';
-import type {Activity, SyncStatus, SyncSummary} from '../shared/types';
+import type {Activity, PlatformNames, SyncStatus, SyncSummary} from '../shared/types';
 import {api, el, icon, make, message} from './dom.js';
 import styles from './styles.module.css';
 import {FilesPanel} from './filesPanel.js';
@@ -54,7 +54,8 @@ export class ProjectsView {
   // True while a project delete runs. It can't be canceled, so the dialog stays open.
   private deleting = false;
 
-  constructor() {
+  constructor(private readonly names: PlatformNames) {
+    el('reveal-folder', HTMLButtonElement).textContent = names.showInFileManager;
     el('refresh-projects', HTMLButtonElement).addEventListener('click', () => void this.load());
     this.syncButton.addEventListener('click', () => {
       if (this.current) {
@@ -378,7 +379,7 @@ export class ProjectsView {
         case 'remove': {
           const {localDir} = await api.openProject(name);
           const ok = window.confirm(
-            `Stop syncing “${name}” on this Mac? Its files stay in Dropbox and in ${localDir}.`
+            `Stop syncing “${name}” on ${this.names.thisComputer}? Its files stay in Dropbox and in ${localDir}.`
           );
           if (ok) {
             await api.removeProject(name);

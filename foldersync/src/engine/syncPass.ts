@@ -59,7 +59,7 @@ function requireRowsInProject(rows: Map<string, Row>, dropboxRoot: string): void
       !parts.some((p) => p === '.' || p === '..');
     if (!inside || key !== pathKey(row.pathDisplay) || row.pathLower !== key) {
       throw new Error(
-        `The sync state lists ${row.pathDisplay}, which isn’t in this project. Remove the project from this Mac, then sync it again.`
+        `The sync state lists ${row.pathDisplay}, which isn’t in this project. Remove the project from this computer, then sync it again.`
       );
     }
   }

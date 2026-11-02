@@ -1,4 +1,7 @@
 // Types shared by the main process, the preload script, and the renderer.
+import type {PlatformNames} from './platformNames';
+
+export type {PlatformNames};
 
 export type TokenState =
   | {kind: 'missing'}
@@ -108,6 +111,8 @@ export interface ChangeGroup {
 
 export interface FoldersyncApi {
   getSetup(): Promise<SetupInfo>;
+  // What this platform calls its file manager and the computer.
+  platformNames(): Promise<PlatformNames>;
   signIn(name: string, tokenServerUrl: string): Promise<SignInResult>;
   signOut(): Promise<void>;
   deleteAccount(): Promise<void>;

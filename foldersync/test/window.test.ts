@@ -5,10 +5,12 @@ import {join} from 'node:path';
 
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 
+import {platformNames} from '../src/shared/platformNames';
 import type {
   Activity,
   ChangeGroup,
   FoldersyncApi,
+  PlatformNames,
   ProjectInfo,
   SyncSummary,
 } from '../src/shared/types';
@@ -44,6 +46,7 @@ function fakeApi(): FoldersyncApi {
   const none = async (): Promise<undefined> => undefined;
   return {
     getSetup: async () => ({tokenServerUrl: 'http://127.0.0.1:8787', signedIn: true}),
+    platformNames: async () => platformNames('darwin'),
     signIn: async () => ({
       setup: {tokenServerUrl: 'http://127.0.0.1:8787', signedIn: true},
       created: false,
@@ -115,9 +118,9 @@ function dotState(name: string): string | undefined {
   return projectButton(name).querySelector<HTMLElement>('[data-state]')?.dataset.state;
 }
 
-async function projectsView() {
+async function projectsView(names: PlatformNames = platformNames('darwin')) {
   const {ProjectsView} = await import('../src/renderer/projectsView');
-  const view = new ProjectsView();
+  const view = new ProjectsView(names);
   await view.load();
   return view;
 }
@@ -205,6 +208,21 @@ describe('ProjectsView', () => {
     await settle();
 
     expect(confirm).not.toHaveBeenCalled();
+  });
+});
+
+describe('ProjectsView platform names', () => {
+  it('names the file manager and the computer for the platform', async () => {
+    const confirm = stubConfirm(false);
+    api.projectMenu = async () => 'remove';
+    await projectsView(platformNames('win32'));
+
+    expect(byId('reveal-folder').textContent).toBe('Show in File Explorer');
+
+    projectButton('a').closest('li')?.dispatchEvent(new MouseEvent('contextmenu'));
+    await settle();
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('“a” on this PC?'));
   });
 });
 

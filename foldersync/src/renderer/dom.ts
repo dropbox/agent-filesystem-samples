@@ -7,6 +7,7 @@ import styles from './styles.module.css';
 // is complete.
 const API_METHODS: Record<keyof FoldersyncApi, true> = {
   getSetup: true,
+  platformNames: true,
   signIn: true,
   signOut: true,
   deleteAccount: true,
