@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 
 import {loadCredentials, saveCredentials, type Credentials} from '../src/engine/credentials';
+import {isWindows} from './fsSupport';
 
 let dir: string;
 let path: string;
@@ -35,7 +36,8 @@ describe('credentials file', () => {
     expect(await loadCredentials(path)).toEqual(creds);
   });
 
-  it('writes the file 0600 in a 0700 folder, even if they were looser', async () => {
+  it('writes the file 0600 in a 0700 folder, even if they were looser', async ({skip}) => {
+    skip(isWindows, 'Windows has no POSIX file modes');
     await chmod(join(dir, 'home'), 0o755);
     await writeFile(path, '{}', {mode: 0o644});
     await writeFile(`${path}.tmp`, 'old', {mode: 0o644});

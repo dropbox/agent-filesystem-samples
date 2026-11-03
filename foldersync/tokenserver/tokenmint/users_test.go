@@ -3,6 +3,7 @@ package tokenmint
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -32,7 +33,10 @@ func TestUsers_AddSaveAndLoad(t *testing.T) {
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	// Windows has no POSIX file modes.
+	if runtime.GOOS != "windows" {
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
 	leftovers, err := filepath.Glob(path + ".tmp*")
 	require.NoError(t, err)
 	require.Empty(t, leftovers)
@@ -102,7 +106,7 @@ func TestDefaultUsersPath(t *testing.T) {
 		return ""
 	})
 	require.NoError(t, err)
-	require.Equal(t, "/tmp/fs/tokenserver/users.json", path)
+	require.Equal(t, filepath.Join("/tmp/fs", "tokenserver", "users.json"), path)
 }
 
 func TestUsers_RejectsADuplicateName(t *testing.T) {

@@ -18,7 +18,9 @@ if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
 const tokenServerUrl = `http://127.0.0.1:${port}`;
 const home = process.env.FOLDERSYNC_HOME ?? join(homedir(), '.foldersync');
 const appKeyPath = join(home, 'tokenserver', 'app_key');
-const tokenServerBin = process.env.FOLDERSYNC_TOKENSERVER ?? join(root, 'out', 'tokenserver');
+const tokenServerBin =
+  process.env.FOLDERSYNC_TOKENSERVER ??
+  join(root, 'out', process.platform === 'win32' ? 'tokenserver.exe' : 'tokenserver');
 
 async function tokenServerRunning() {
   try {

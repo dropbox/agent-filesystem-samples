@@ -8,7 +8,7 @@
   "scripts": {
     "app": "npm run build && electron .",
     "build": "tsc -p tsconfig.json && node scripts/css-types.mjs && tsc -p tsconfig.renderer.json --noEmit && node scripts/build-renderer.mjs && node scripts/copy-static.mjs",
-    "build:tokenserver": "cd tokenserver && go build -o ../out/tokenserver .",
+    "build:tokenserver": "cd tokenserver && go build -o ../out/ .",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.mjs\" \"*.mjs\" \"*.mts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.mjs\" \"*.mjs\" \"*.mts\"",
     "lint": "eslint . && stylelint \"src/**/*.css\"",

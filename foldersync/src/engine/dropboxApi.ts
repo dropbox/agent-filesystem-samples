@@ -2,10 +2,10 @@
 // rpc() for other routes. Uploads send their data in parallel and commit in
 // batches, one batch at a time, since Dropbox limits how many writes run at
 // once in an account.
-import {constants} from 'node:fs';
 import {open, rm, stat} from 'node:fs/promises';
 
 import {ContentHasher, hashBuffer} from './contentHash';
+import {openNoFollow} from './openFile';
 
 export interface FileMeta {
   tag: 'file';
@@ -252,8 +252,8 @@ export class DropboxClient implements DropboxFiles {
     this.sendingData++;
     try {
       size = (await stat(req.localPath)).size;
-      // O_NOFOLLOW: if the file was swapped for a symlink, fail instead of uploading its target.
-      const file = await open(req.localPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      // If the file was swapped for a symlink, fail instead of uploading its target.
+      const file = await openNoFollow(req.localPath);
       try {
         sessionId = await this.uploadData(file, size, req);
       } finally {

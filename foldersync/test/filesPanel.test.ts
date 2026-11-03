@@ -1,6 +1,6 @@
 import {mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {basename, isAbsolute, join} from 'node:path';
 
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 
@@ -167,7 +167,8 @@ describe('FilesPanel', () => {
       name: 'payload.exe',
     });
 
-    expect(opened.endsWith(`${'/'}a.txt`)).toBe(true);
+    expect(isAbsolute(opened)).toBe(true);
+    expect(basename(opened)).toBe('a.txt');
     panel.removeOpenCopies();
   });
 

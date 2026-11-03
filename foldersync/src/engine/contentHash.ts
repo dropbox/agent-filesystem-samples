@@ -1,8 +1,8 @@
 // Dropbox content_hash: SHA-256 of each 4 MiB block, then SHA-256 of the
 // concatenated block hashes, as hex.
 import {createHash, type Hash} from 'node:crypto';
-import {constants} from 'node:fs';
-import {open} from 'node:fs/promises';
+
+import {openNoFollow} from './openFile';
 
 export const BLOCK_SIZE = 4 * 1024 * 1024;
 
@@ -46,7 +46,7 @@ export function hashBuffer(data: Uint8Array): string {
 
 // Hashes a file. Fails if the path is a symlink, so it never reads outside the project.
 export async function hashFile(path: string): Promise<string> {
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await openNoFollow(path);
   try {
     const hasher = new ContentHasher();
     for await (const chunk of file.createReadStream({autoClose: false})) {

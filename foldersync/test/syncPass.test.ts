@@ -25,6 +25,7 @@ import {Pool} from '../src/engine/pool';
 import {StateStore} from '../src/engine/stateStore';
 import {runSyncPass, type PassOptions} from '../src/engine/syncPass';
 import {FakeDropbox} from './fakeDropbox';
+import {NO_CHMOD, chmodBlocksAccess, isWindows} from './fsSupport';
 
 const ROOT = '/project';
 const ACCOUNT = 'pid_user:a';
@@ -320,7 +321,8 @@ describe('sync pass', () => {
     expect(dropbox.files.size).toBe(0);
   });
 
-  it('refuses to sync when the project folder is missing', async () => {
+  it('refuses to sync when the project folder is missing', async ({skip}) => {
+    skip(isWindows, 'Windows can’t delete the folder while the sync database in it is open');
     dropbox.put('/project/a.txt', 'A');
     await sync();
     await rm(dir, {recursive: true, force: true});
@@ -511,7 +513,8 @@ describe('sync pass', () => {
     expect((await sync()).issues).toEqual([]);
   });
 
-  it('syncs the other files when one can’t be read', async () => {
+  it('syncs the other files when one can’t be read', async ({skip}) => {
+    skip(!chmodBlocksAccess, NO_CHMOD);
     await writeLocal('locked.txt', 'L');
     await writeLocal('a.txt', 'A');
     await chmod(join(dir, 'locked.txt'), 0o000);
@@ -527,7 +530,8 @@ describe('sync pass', () => {
     expect(dropbox.content('/project/locked.txt')).toBe('L');
   });
 
-  it('syncs the rest of the project when a folder can’t be read', async () => {
+  it('syncs the rest of the project when a folder can’t be read', async ({skip}) => {
+    skip(!chmodBlocksAccess, NO_CHMOD);
     dropbox.put('/project/locked/keep.txt', 'K');
     await sync();
     await writeLocal('a.txt', 'A');
@@ -542,7 +546,8 @@ describe('sync pass', () => {
     expect((await sync()).issues).toEqual([]);
   });
 
-  it('syncs the rest of the project when a folder’s items can’t be read', async () => {
+  it('syncs the rest of the project when a folder’s items can’t be read', async ({skip}) => {
+    skip(!chmodBlocksAccess, NO_CHMOD);
     dropbox.put('/project/listed/keep.txt', 'K');
     await sync();
     await writeLocal('a.txt', 'A');
@@ -680,7 +685,8 @@ describe('sync pass', () => {
     expect(backups.some((n) => n.endsWith('漢.txt'))).toBe(true);
   });
 
-  it('never uploads the state folder when it is spelled .FolderSync', async () => {
+  it('never uploads the state folder when it is spelled .FolderSync', async ({skip}) => {
+    skip(isWindows, 'Windows can’t rename the state folder while the sync database in it is open');
     await rename(join(dir, STATE_DIR), join(dir, '.FolderSync'));
     await writeLocal('.FolderSync/notes.txt', 'private');
     await writeLocal('a.txt', 'A');
@@ -848,7 +854,13 @@ describe('sync pass', () => {
     await rm(outside, {recursive: true, force: true});
   });
 
-  it('stops writing when the project folder is swapped for a link during the pass', async () => {
+  it('stops writing when the project folder is swapped for a link during the pass', async ({
+    skip,
+  }) => {
+    skip(
+      isWindows,
+      'Windows can’t rename the project folder while the sync database in it is open'
+    );
     dropbox.put('/project/a.txt', 'A');
     await sync();
     const moved = `${dir}-moved`;
@@ -870,7 +882,13 @@ describe('sync pass', () => {
     await rename(moved, dir);
   });
 
-  it('deletes nothing in Dropbox when the project folder is replaced before the scan', async () => {
+  it('deletes nothing in Dropbox when the project folder is replaced before the scan', async ({
+    skip,
+  }) => {
+    skip(
+      isWindows,
+      'Windows can’t rename the project folder while the sync database in it is open'
+    );
     dropbox.put('/project/a.txt', 'A');
     dropbox.put('/project/b.txt', 'B');
     await sync();
@@ -1092,7 +1110,8 @@ describe('sync pass', () => {
     expect(await local('shots/a.txt')).toBe('A');
   });
 
-  it('keeps a synced file in Dropbox after it is replaced by a FIFO', async () => {
+  it('keeps a synced file in Dropbox after it is replaced by a FIFO', async ({skip}) => {
+    skip(isWindows, 'Windows has no FIFOs');
     dropbox.put('/project/a.txt', 'A');
     await sync();
     await rm(join(dir, 'a.txt'));
