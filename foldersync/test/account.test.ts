@@ -8,6 +8,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {Account, serverUrl} from '../src/main/account';
 import {Settings} from '../src/main/config';
 import type {TokenState} from '../src/shared/types';
+import {NO_CHMOD, chmodBlocksAccess} from './fsSupport';
 
 let dir: string;
 let credentialsPath: string;
@@ -153,7 +154,8 @@ describe('Account', () => {
     expect(redirects.every((r) => r === 'error')).toBe(true);
   });
 
-  it('keeps the previous account when settings can’t be saved', async () => {
+  it('keeps the previous account when settings can’t be saved', async ({skip}) => {
+    skip(!chmodBlocksAccess, NO_CHMOD);
     const server = twoUserServer();
     server.releaseA();
     const a = await account(server.fetchImpl);
@@ -171,7 +173,10 @@ describe('Account', () => {
     expect(() => a.userClient()).not.toThrow();
   });
 
-  it('stays signed out of a deleted account when its credentials can’t be removed', async () => {
+  it('stays signed out of a deleted account when its credentials can’t be removed', async ({
+    skip,
+  }) => {
+    skip(!chmodBlocksAccess, NO_CHMOD);
     const server = twoUserServer();
     server.releaseA();
     const a = await account(server.fetchImpl);
@@ -250,7 +255,8 @@ describe('Account', () => {
     expect(a.setupInfo().signedIn).toBe(false);
   });
 
-  it('stays signed in when the credentials file can’t be deleted', async () => {
+  it('stays signed in when the credentials file can’t be deleted', async ({skip}) => {
+    skip(!chmodBlocksAccess, NO_CHMOD);
     const server = tokenServer();
     server.release();
     const a = await account(server.fetchImpl);

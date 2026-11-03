@@ -10,6 +10,7 @@ import {ProjectClients, type UserApi} from '../src/main/projectClients';
 import {Projects} from '../src/main/projects';
 import type {SyncStatus} from '../src/shared/types';
 import type {DropboxFiles} from '../src/engine/dropboxApi';
+import {NO_CHMOD, chmodBlocksAccess} from './fsSupport';
 import {FakeRpc, agent, memoryDirectory} from './fakeRpc';
 
 const WAIT_MS = 10 * 60 * 1000;
@@ -428,7 +429,8 @@ describe('Projects.remove', () => {
     expect(existsSync(join(local, '.foldersync', 'state.db'))).toBe(true);
   });
 
-  it('says so when the project is removed but its sync state can’t be deleted', async () => {
+  it('says so when the project is removed but its sync state can’t be deleted', async ({skip}) => {
+    skip(!chmodBlocksAccess, NO_CHMOD);
     const {projects} = await setup(() => 'complete');
     await projects.setLocalDir('storyboard', join(dir, 'work', 'storyboard'));
     const state = join(dir, 'work', 'storyboard', '.foldersync');
