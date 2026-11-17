@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 
 import {BLOCK_SIZE, hashBuffer, hashFile} from '../src/engine/contentHash';
-import {DropboxClient, Pacer} from '../src/engine/dropboxApi';
+import {ApiError, DropboxClient, Pacer} from '../src/engine/dropboxApi';
 import {
   HttpAgentDirectory,
   HttpTokenProvider,
@@ -374,27 +374,99 @@ describe('Dropbox client', () => {
     await expect(api.downloadToFile('/p/a.txt', dest)).rejects.toThrow(/no valid/);
   });
 
-  it('fails a call instead of retrying early when Retry-After is over a minute', async () => {
-    const waits: number[] = [];
-    let calls = 0;
+  it.each([
+    ['61', '2 minutes'],
+    ['3600', '60 minutes'],
+  ])(
+    'fails a call instead of retrying early when Retry-After is %s seconds',
+    async (retryAfter, wait) => {
+      const waits: number[] = [];
+      let calls = 0;
+      const api = new DropboxClient({
+        pacer: new Pacer(),
+        fetchImpl: async () => {
+          calls++;
+          return new Response('{"error_summary": "too_many_requests/"}', {
+            status: 429,
+            headers: {'Retry-After': retryAfter},
+          });
+        },
+        tokens: {getToken: async () => 'tok', renewToken: async () => 'tok'},
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+      });
+
+      await expect(api.listFolder('/p', true)).rejects.toThrow(
+        `HTTP 429: too_many_requests/. Dropbox asks to wait ${wait} before trying again.`
+      );
+      expect(calls).toBe(1);
+      expect(waits).toEqual([]);
+    }
+  );
+
+  it('names a rate limit’s reason and wait when error_summary is empty', async () => {
+    // What agents/access_token/mint returns when the app's mint budget is used up.
+    const body = JSON.stringify({
+      error: {reason: {'.tag': 'too_many_requests'}, retry_after: 600},
+      error_summary: '',
+    });
     const api = new DropboxClient({
       pacer: new Pacer(),
+      fetchImpl: async () => new Response(body, {status: 429, headers: {'Retry-After': '600'}}),
+      tokens: {getToken: async () => 'tok', renewToken: async () => 'tok'},
+      sleep: async () => {},
+    });
+
+    const err: unknown = await api.listFolder('/p', true).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).summary).toBe('too_many_requests/');
+    expect((err as ApiError).retryAfterSeconds).toBe(600);
+    expect((err as ApiError).message).toBe(
+      'Dropbox returned HTTP 429: too_many_requests/. Dropbox asks to wait 10 minutes before trying again.'
+    );
+  });
+
+  it('names the error’s tags when error_summary is empty', async () => {
+    const body = JSON.stringify({
+      error: {'.tag': 'path', path: {'.tag': 'not_found'}},
+      error_summary: '',
+    });
+    const api = new DropboxClient({
+      pacer: new Pacer(),
+      fetchImpl: async () => new Response(body, {status: 409}),
+      tokens: {getToken: async () => 'tok', renewToken: async () => 'tok'},
+      sleep: async () => {},
+    });
+
+    await expect(api.listFolder('/p', true)).rejects.toThrow(
+      /^Dropbox returned HTTP 409: path\/not_found\/$/
+    );
+  });
+
+  it('says how long to wait after too many short Retry-Afters', async () => {
+    let calls = 0;
+    let now = 0;
+    const api = new DropboxClient({
+      pacer: new Pacer(() => now),
       fetchImpl: async () => {
         calls++;
         return new Response('{"error_summary": "too_many_requests/"}', {
           status: 429,
-          headers: {'Retry-After': '3600'},
+          headers: {'Retry-After': '30'},
         });
       },
       tokens: {getToken: async () => 'tok', renewToken: async () => 'tok'},
       sleep: async (ms) => {
-        waits.push(ms);
+        now += ms;
       },
     });
 
-    await expect(api.listFolder('/p', true)).rejects.toThrow(/HTTP 429: too_many_requests/);
-    expect(calls).toBe(1);
-    expect(waits).toEqual([]);
+    await expect(api.listFolder('/p', true)).rejects.toThrow(
+      'Dropbox asks to wait 30 seconds before trying again.'
+    );
+    expect(calls).toBe(11);
   });
 
   it('leaves no timer running after a call finishes', async () => {
