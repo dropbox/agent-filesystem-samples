@@ -68,10 +68,26 @@ export class ApiError extends Error {
     readonly status: number,
     readonly summary: string,
     // The parsed JSON error body, if there was one.
-    readonly body?: unknown
+    readonly body?: unknown,
+    // The response's Retry-After, if it had one.
+    readonly retryAfterSeconds?: number
   ) {
-    super(`Dropbox returned HTTP ${status}: ${summary}`);
+    super(
+      `Dropbox returned HTTP ${status}: ${summary}` +
+        (retryAfterSeconds === undefined
+          ? ''
+          : `. Dropbox asks to wait ${waitText(retryAfterSeconds)} before trying again.`)
+    );
   }
+}
+
+// Like '30 seconds' or '10 minutes', rounded up to whole minutes from a minute on.
+function waitText(seconds: number): string {
+  if (seconds < 60) {
+    return seconds === 1 ? '1 second' : `${seconds} seconds`;
+  }
+  const minutes = Math.ceil(seconds / 60);
+  return minutes === 1 ? '1 minute' : `${minutes} minutes`;
 }
 
 export function isConflict(err: unknown): boolean {
@@ -668,7 +684,7 @@ class IdleTimeout {
 async function throwIfError(res: Response): Promise<void> {
   if (!res.ok) {
     const text = await res.text();
-    throw new ApiError(res.status, summaryOf(text), parseJson(text));
+    throw new ApiError(res.status, summaryOf(text), parseJson(text), retryAfterSeconds(res));
   }
 }
 
@@ -695,8 +711,14 @@ function correctOffset(err: unknown): number | undefined {
 
 // Retry-After if the response has it, else exponential backoff.
 function retryDelayMs(res: Response, attempt: number): number {
+  const seconds = retryAfterSeconds(res);
+  return seconds === undefined ? 500 * 2 ** attempt : seconds * 1000;
+}
+
+// The Retry-After header in seconds, if it's there and over 0.
+function retryAfterSeconds(res: Response): number | undefined {
   const seconds = Number(res.headers.get('retry-after'));
-  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 500 * 2 ** attempt;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
 }
 
 // Joins nested '.tag' values the way error_summary does, like 'path/conflict/file/'.
@@ -715,14 +737,21 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// error_summary, or the error's tags when it's empty. A rate limit's tags are
+// in error.reason, like 'too_many_requests/'.
 function summaryOf(text: string): string {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (isRecord(parsed) && typeof parsed.error_summary === 'string') {
-      return parsed.error_summary;
+  const parsed = parseJson(text);
+  if (!isRecord(parsed)) {
+    return text.trim();
+  }
+  if (typeof parsed.error_summary === 'string' && parsed.error_summary) {
+    return parsed.error_summary;
+  }
+  const error = parsed.error;
+  for (const node of [error, isRecord(error) ? error.reason : undefined]) {
+    if (isRecord(node) && typeof node['.tag'] === 'string') {
+      return tagPath(node);
     }
-  } catch {
-    // Not JSON; use the text.
   }
   return text.trim();
 }
