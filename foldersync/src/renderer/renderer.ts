@@ -6,7 +6,7 @@ import {ProjectsView} from './projectsView.js';
 
 applyCss();
 fillIcons();
-const projects = new ProjectsView();
+const projects = new ProjectsView(await api.platformNames());
 const account = new AccountView(
   () => void projects.load(),
   () => projects.reset()

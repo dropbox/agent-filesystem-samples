@@ -17,9 +17,11 @@ import {
 } from 'electron';
 
 import type {DropboxClient} from '../engine/dropboxApi';
+import {platformNames} from '../shared/platformNames';
 import type {FileAction, ProjectAction} from '../shared/types';
 import {Account} from './account';
 import {Settings, credentialsPath, tokenServerFromEnv} from './config';
+import {requireFileManager} from './fileManager';
 import {FilesPanel} from './filesPanel';
 import {ProjectClients} from './projectClients';
 import {Projects} from './projects';
@@ -56,7 +58,10 @@ function popupMenu<T>(items: MenuItem<T>[]): Promise<T | undefined> {
   });
 }
 
+const names = platformNames(process.platform);
+
 async function openPath(path: string): Promise<void> {
+  await requireFileManager();
   const error = await shell.openPath(path);
   if (error) {
     throw new Error(error);
@@ -65,6 +70,7 @@ async function openPath(path: string): Promise<void> {
 
 function registerIpc(account: Account, projects: Projects, files: FilesPanel): void {
   ipcMain.handle('get-setup', () => account.setupInfo());
+  ipcMain.handle('platform-names', () => names);
   // Account changes hold the project lock, so no project action overlaps them.
   ipcMain.handle('sign-in', (_e, name: unknown, url: unknown) =>
     projects.duringAccountChange(() => account.signIn(name, url))
@@ -108,8 +114,8 @@ function registerIpc(account: Account, projects: Projects, files: FilesPanel): v
   ipcMain.handle('project-menu', (_e, name: unknown) => {
     requireProjectName(name);
     return popupMenu<ProjectAction>([
-      {label: 'Show in Finder', action: 'reveal'},
-      {label: 'Remove from This Mac', action: 'remove'},
+      {label: names.showInFileManager, action: 'reveal'},
+      {label: names.removeFromComputer, action: 'remove'},
       {type: 'separator'},
       {label: 'Delete from Dropbox…', action: 'delete'},
     ]);
@@ -139,7 +145,7 @@ function registerIpc(account: Account, projects: Projects, files: FilesPanel): v
     if (entry.kind === 'file') {
       items.push({label: 'Open', action: 'open'});
     }
-    items.push({label: 'Show in Finder', enabled: entry.onComputer, action: 'reveal'});
+    items.push({label: names.showInFileManager, enabled: entry.onComputer, action: 'reveal'});
     if (entry.kind === 'file') {
       items.push({type: 'separator'}, {label: 'Delete from Dropbox…', action: 'delete'});
     }
@@ -148,11 +154,11 @@ function registerIpc(account: Account, projects: Projects, files: FilesPanel): v
   ipcMain.handle('open-file', async (_e, project: unknown, entry: unknown) =>
     openPath(await files.fileToOpen(requireProjectName(project), requireEntry(entry)))
   );
-  ipcMain.handle('reveal-file', async (_e, project: unknown, path: unknown) =>
-    shell.showItemInFolder(
-      await files.fileToReveal(requireProjectName(project), requireDropboxPath(path))
-    )
-  );
+  ipcMain.handle('reveal-file', async (_e, project: unknown, path: unknown) => {
+    const file = await files.fileToReveal(requireProjectName(project), requireDropboxPath(path));
+    await requireFileManager();
+    shell.showItemInFolder(file);
+  });
   ipcMain.handle('delete-file', (_e, project: unknown, path: unknown, rev: unknown) => {
     const name = requireProjectName(project);
     return projects.exclusive(name, 'file delete', () =>

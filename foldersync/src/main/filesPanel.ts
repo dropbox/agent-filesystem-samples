@@ -1,5 +1,5 @@
 // The Dropbox files panel: one folder level of a project as it is in Dropbox,
-// each file's status on this computer, and the Open, Show in Finder, and
+// each file's status on this computer, and the Open, Show in the file manager, and
 // Delete from Dropbox actions.
 import {existsSync, rmSync} from 'node:fs';
 import {mkdtemp, realpath, rm} from 'node:fs/promises';
@@ -108,7 +108,7 @@ export class FilesPanel {
     this.openCopies.clear();
   }
 
-  // The local copy to show in Finder.
+  // The local copy to show in the file manager.
   async fileToReveal(project: string, path: string): Promise<string> {
     const local = this.localPath(project, path);
     if (!existsSync(local)) {
