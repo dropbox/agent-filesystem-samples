@@ -75,6 +75,7 @@ export class AccountView {
   showApp(info: SetupInfo): void {
     const name = info.userName ?? 'Managed user';
     this.accountName.textContent = name;
+    this.accountName.title = name;
     this.avatar.textContent = name.slice(0, 1).toUpperCase();
     this.onboarding.hidden = true;
     this.appView.hidden = false;
