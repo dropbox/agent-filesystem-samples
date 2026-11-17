@@ -5,7 +5,7 @@ import {mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
-import {afterAll, beforeAll, describe, expect, it} from 'vitest';
+import {afterAll, beforeAll, beforeEach, describe, expect, it} from 'vitest';
 
 import {hashFile} from '../../src/engine/contentHash';
 import {DropboxClient} from '../../src/engine/dropboxApi';
@@ -22,6 +22,7 @@ import {
   groupsSince,
   projectName,
   remotePaths,
+  requireMintBudget,
   settle,
   sleep,
 } from './harness';
@@ -34,6 +35,43 @@ let c1: Computer;
 let c2: Computer;
 let c3: Computer;
 let bobs: Computer;
+let group = 0;
+
+// Signs in a new alice on three computers for a group of tests, and with
+// withBob, bob on one. Dropbox limits how many tokens one managed user may mint
+// in a while, so groups don't share users.
+function signInForGroup(withBob = false): void {
+  const users: TestUser[] = [];
+  const computers: Computer[] = [];
+  beforeAll(async () => {
+    requireMintBudget();
+    const g = `g${++group}`;
+    alice = await TestUser.create('alice');
+    users.push(alice);
+    for (const n of [1, 2, 3]) {
+      computers.push(await Computer.create(root, alice, `${g}-alice${n}`));
+    }
+    [c1, c2, c3] = computers as [Computer, Computer, Computer];
+    if (withBob) {
+      bob = await TestUser.create('bob');
+      users.push(bob);
+      bobs = await Computer.create(root, bob, `${g}-bob1`);
+      computers.push(bobs);
+    }
+  });
+
+  afterAll(async () => {
+    for (const c of computers) {
+      c.stop();
+    }
+    // Delete every user even if one fails.
+    const removed = await Promise.allSettled(users.map((u) => u.remove()));
+    const failed = removed.find((r) => r.status === 'rejected');
+    if (failed) {
+      throw failed.reason;
+    }
+  });
+}
 
 // Creates a project, writes files on computer 1, and syncs them to the others.
 async function project(
@@ -182,28 +220,17 @@ describe.skipIf(!SERVER)('live races', () => {
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), 'foldersync-e2e-races-'));
     process.env.FOLDERSYNC_PROJECTS = join(root, 'default-projects');
-    alice = await TestUser.create('alice');
-    bob = await TestUser.create('bob');
-    c1 = await Computer.create(root, alice, 'alice1');
-    c2 = await Computer.create(root, alice, 'alice2');
-    c3 = await Computer.create(root, alice, 'alice3');
-    bobs = await Computer.create(root, bob, 'bob1');
   });
 
+  beforeEach(requireMintBudget);
+
   afterAll(async () => {
-    for (const c of [c1, c2, c3, bobs]) {
-      c?.stop();
-    }
-    // Delete both users and the folder even if one step fails.
-    const removed = await Promise.allSettled([alice?.remove(), bob?.remove()]);
     await rm(root, {recursive: true, force: true});
-    const failed = removed.find((r) => r.status === 'rejected');
-    if (failed) {
-      throw failed.reason;
-    }
   });
 
   describe('the same file at the same time', () => {
+    signInForGroup();
+
     it('keeps both versions when two computers edit a file and sync at once', async () => {
       const p = await project('same-edit', {'a.txt': 'base'});
       await c1.write(p, 'a.txt', 'from c1');
@@ -250,6 +277,8 @@ describe.skipIf(!SERVER)('live races', () => {
   });
 
   describe('edits and deletes at the same time', () => {
+    signInForGroup();
+
     // Skipped: when an edit and a delete reach Dropbox at the same moment,
     // Dropbox can apply both, so the edit is lost even though the delete sent
     // the file's revision. It needs a fix in Dropbox's delete.
@@ -349,6 +378,8 @@ describe.skipIf(!SERVER)('live races', () => {
   });
 
   describe('edits during a transfer', () => {
+    signInForGroup();
+
     it('uploads the newest version when a file changes while it uploads', async () => {
       const p = await project('edit-upload', {});
       await c1.write(p, 'x.txt', 'v1');
@@ -389,6 +420,8 @@ describe.skipIf(!SERVER)('live races', () => {
   });
 
   describe('projects and managed users', () => {
+    signInForGroup(true);
+
     it('syncs two projects at once without mixing them, each with its own agent', async () => {
       const a = await project('two-a', {});
       const b = await project('two-b', {});
@@ -455,6 +488,8 @@ describe.skipIf(!SERVER)('live races', () => {
   });
 
   describe('undo and tokens', () => {
+    signInForGroup();
+
     it('keeps a change made outside FolderSync when undoing', async () => {
       const p = await project('undo-other', {'a.txt': 'base'});
       await sleep(3000);
