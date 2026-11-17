@@ -585,6 +585,19 @@ describe('ProjectsView status and deletes', () => {
 });
 
 describe('AccountView', () => {
+  it('shows the full account name on hover', async () => {
+    const {AccountView} = await import('../src/renderer/accountView');
+    const view = new AccountView(
+      () => {},
+      () => {}
+    );
+    const name = 'a-managed-user-name-too-long-for-the-sidebar';
+    view.showApp({tokenServerUrl: 'http://127.0.0.1:8787', signedIn: true, userName: name});
+
+    expect(byId('account-name').textContent).toBe(name);
+    expect(byId('account-name').title).toBe(name);
+  });
+
   it('shows sign-in when the account was deleted but cleanup here failed', async () => {
     const {AccountView} = await import('../src/renderer/accountView');
     const view = new AccountView(
