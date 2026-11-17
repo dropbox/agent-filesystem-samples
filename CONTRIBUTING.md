@@ -18,7 +18,7 @@ Each top-level folder is one sample, with its own README, dependencies, and test
 
 ## Working on FolderSync
 
-You need Node.js 24 or later and Go 1.27.3 or later. The app runs on macOS on Apple silicon today.
+You need Node.js 24 or later and Go 1.27.4 or later. The app runs on macOS on Apple silicon today.
 
 ```sh
 cd foldersync
