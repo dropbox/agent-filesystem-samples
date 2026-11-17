@@ -2,6 +2,7 @@
 // through a running token server, and simulated computers that run the app's
 // real Projects code against Dropbox.
 import {createHash, randomBytes} from 'node:crypto';
+import {existsSync, readFileSync, writeFileSync} from 'node:fs';
 import {mkdir, readFile, readdir, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 
@@ -25,6 +26,55 @@ import {e2eLog, redact} from './log';
 export const SERVER = process.env.FOLDERSYNC_E2E_TOKEN_SERVER ?? '';
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// Where the run records a refused mint, next to its log, so every test file sees
+// it. Dropbox limits how many tokens an app and each managed user may mint in a
+// while, so the rest of the run would fail the same way.
+function refusalPath(): string {
+  const log = process.env.FOLDERSYNC_E2E_LOG;
+  if (!log) {
+    throw new Error('FOLDERSYNC_E2E_LOG isn’t set. Run these tests with npm run test:e2e.');
+  }
+  return `${log}.mint-refused`;
+}
+
+// Fails at once after a refused mint in this run, with the reason.
+export function requireMintBudget(): void {
+  const path = refusalPath();
+  if (existsSync(path)) {
+    throw new Error(readFileSync(path, 'utf8'));
+  }
+}
+
+// fetch that notices a refused mint: a 429 from an access_token/mint route, or
+// the token server's /token passing on Dropbox's too_many_requests.
+const watchingFetch: typeof fetch = async (input, init) => {
+  const res = await fetch(input, init);
+  const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+  const refused = path.endsWith('/access_token/mint')
+    ? res.status === 429
+    : path === '/token' && !res.ok && (await res.clone().text()).includes('too_many_requests');
+  if (refused) {
+    const wait = res.headers.get('retry-after');
+    const reason =
+      `Dropbox refused to mint a token (${path}, HTTP ${res.status}): ` +
+      'the test app minted too many tokens. ' +
+      (wait
+        ? `Dropbox asks to wait ${wait} seconds. `
+        : 'The token server’s log has Dropbox’s answer. ') +
+      'Run the tests again after that.';
+    try {
+      // wx keeps the first refusal.
+      writeFileSync(refusalPath(), reason, {flag: 'wx'});
+      e2eLog(reason);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw err;
+      }
+    }
+  }
+  return res;
+};
 
 // A unique name for a test's project, so tests don't share Dropbox state.
 export function projectName(label: string): string {
@@ -78,7 +128,7 @@ class HookedClient extends DropboxClient {
     tokens: TokenSource,
     private readonly hooks: Hooks
   ) {
-    super({tokens});
+    super({tokens, fetchImpl: watchingFetch});
   }
 
   override async upload(req: UploadRequest): Promise<FileMeta> {
@@ -115,7 +165,9 @@ export class Computer {
     const dir = join(root, label);
     await mkdir(dir, {recursive: true});
     const settings = await Settings.load(join(dir, 'settings.json'));
-    const userTokens = new TokenManager(new HttpTokenProvider(SERVER, user.connectionKey));
+    const userTokens = new TokenManager(
+      new HttpTokenProvider(SERVER, user.connectionKey, watchingFetch)
+    );
     const hooks: Hooks = {};
     const userApi = (): HookedClient => new HookedClient(userTokens, hooks);
     const clients = new ProjectClients(
@@ -137,7 +189,7 @@ export class Computer {
   }
 
   userApi(): DropboxClient {
-    return new DropboxClient({tokens: this.userTokens});
+    return new DropboxClient({tokens: this.userTokens, fetchImpl: watchingFetch});
   }
 
   // Points the project at a folder of this computer's own.
@@ -159,6 +211,7 @@ export class Computer {
   }
 
   async sync(project: string, allowMassDelete = false): Promise<SyncSummary> {
+    requireMintBudget();
     const s = await this.projects.sync(project, allowMassDelete);
     const issues = s.issues.map((i) => `\n    issue ${i.path}: ${i.message}`).join('');
     const line =
@@ -169,6 +222,8 @@ export class Computer {
     if (process.env.FOLDERSYNC_E2E_VERBOSE) {
       console.log(redact(line));
     }
+    // The pass reports a refused mint as an issue, so check again.
+    requireMintBudget();
     return s;
   }
 
@@ -232,21 +287,25 @@ export async function remotePaths(computer: Computer, project: string): Promise<
   return out;
 }
 
-// Syncs each computer in turn until a full round changes nothing.
+// Syncs each computer in turn until a full round changes nothing. If it never
+// does, the error lists the last round's issues.
 export async function settle(project: string, computers: Computer[]): Promise<void> {
+  let issues: string[] = [];
   for (let round = 0; round < 5; round++) {
     let changed = false;
+    issues = [];
     for (const c of computers) {
       const s = await c.sync(project);
       changed ||=
         s.uploaded + s.downloaded + s.deletedLocal + s.deletedRemote + s.conflicts > 0 ||
         s.issues.length > 0;
+      issues.push(...s.issues.map((i) => `\n  ${c.label} ${i.path}: ${i.message}`));
     }
     if (!changed) {
       return;
     }
   }
-  throw new Error(`${project} didn't settle after 5 rounds`);
+  throw new Error(redact(`${project} didn't settle after 5 rounds${issues.join('')}`));
 }
 
 // The undo groups at or after a local time, oldest first. Allows for clock skew.

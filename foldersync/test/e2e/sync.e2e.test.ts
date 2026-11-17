@@ -6,9 +6,18 @@ import {mkdir, mkdtemp, open, readFile, readdir, rename, rm} from 'node:fs/promi
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
-import {afterAll, beforeAll, describe, expect, it} from 'vitest';
+import {afterAll, beforeAll, beforeEach, describe, expect, it} from 'vitest';
 
-import {Computer, SERVER, TestUser, groupsSince, projectName, remotePaths, sleep} from './harness';
+import {
+  Computer,
+  SERVER,
+  TestUser,
+  groupsSince,
+  projectName,
+  remotePaths,
+  requireMintBudget,
+  sleep,
+} from './harness';
 
 const P = projectName('sync');
 const LONG1 = `Very long folder name ${'x'.repeat(200)}`;
@@ -43,6 +52,8 @@ describe.skipIf(!SERVER)('live sync', () => {
     await c1.use(P);
     await c2.use(P);
   });
+
+  beforeEach(requireMintBudget);
 
   afterAll(async () => {
     c1?.stop();
